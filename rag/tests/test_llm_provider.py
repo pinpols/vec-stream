@@ -1,20 +1,13 @@
-"""LLM provider 可插拔分发(anthropic / openai 兼容协议)。"""
+"""LLM 生成层:统一走 OpenAI 兼容协议(base_url 指 agent-ctl 网关或任意兼容服务)。"""
 import sys
 import types
-
-import pytest
 
 from vec_stream_rag import llm
 
 SOURCES = [{"n": 1, "title": "T", "content": "C"}]
 
 
-def test_dispatch_openai(monkeypatch):
-    monkeypatch.setattr(llm, "LLM_PROVIDER", "openai")
-
-    # 构造假 openai SDK 模块
-    captured = {}
-
+def _install_fake_openai(monkeypatch, captured):
     class FakeUsage:
         prompt_tokens = 11
         completion_tokens = 7
@@ -46,56 +39,29 @@ def test_dispatch_openai(monkeypatch):
     fake_mod.OpenAI = FakeOpenAI
     monkeypatch.setitem(sys.modules, "openai", fake_mod)
 
+
+def test_generate_answer_openai_compatible(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(llm, "LLM_MODEL", "deepseek-chat")
+    monkeypatch.setattr(llm, "OPENAI_BASE_URL", "http://localhost:8400/v1")
+    _install_fake_openai(monkeypatch, captured)
+
     out = llm.generate_answer("Q", SOURCES)
     assert out["answer"] == "答案 [1]"
+    assert out["model"] == "deepseek-chat"
     assert out["usage"] == {"input_tokens": 11, "output_tokens": 7}
-    # system + user 两条消息,prompt 含资料与问题
+    # base_url 透传(指向网关);system + user 两条消息,user 含资料与问题
+    assert captured["base_url"] == "http://localhost:8400/v1"
     msgs = captured["messages"]
     assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
     assert "Q" in msgs[1]["content"] and "[1]" in msgs[1]["content"]
 
 
-def test_dispatch_anthropic(monkeypatch):
-    monkeypatch.setattr(llm, "LLM_PROVIDER", "anthropic")
-
-    class FakeUsage:
-        input_tokens = 5
-        output_tokens = 3
-
-    class FakeBlock:
-        type = "text"
-        text = "Claude 答 [1]"
-
-    class FakeResp:
-        stop_reason = "end_turn"
-        content = [FakeBlock()]
-        usage = FakeUsage()
-
-    class FakeMessages:
-        def create(self, **kw):
-            return FakeResp()
-
-    class FakeAnthropic:
-        def __init__(self, *a, **k):
-            self.messages = FakeMessages()
-
-    fake_mod = types.ModuleType("anthropic")
-    fake_mod.Anthropic = FakeAnthropic
-    monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
-
-    out = llm.generate_answer("Q", SOURCES)
-    assert out["answer"] == "Claude 答 [1]"
-    assert out["usage"] == {"input_tokens": 5, "output_tokens": 3}
-
-
-def test_unknown_provider(monkeypatch):
-    monkeypatch.setattr(llm, "LLM_PROVIDER", "grok")
-    with pytest.raises(ValueError, match="未知 LLM_PROVIDER"):
-        llm.generate_answer("Q", SOURCES)
-
-
-def test_api_key_env_switches(monkeypatch):
-    monkeypatch.setattr(llm, "LLM_PROVIDER", "openai")
+def test_api_key_env_is_openai():
+    # 统一 OpenAI 兼容 → 始终查 OPENAI_API_KEY(指向网关时为占位)
     assert llm.api_key_env() == "OPENAI_API_KEY"
-    monkeypatch.setattr(llm, "LLM_PROVIDER", "anthropic")
-    assert llm.api_key_env() == "ANTHROPIC_API_KEY"
+
+
+def test_active_provider_reflects_base_url(monkeypatch):
+    monkeypatch.setattr(llm, "OPENAI_BASE_URL", "http://localhost:8400/v1")
+    assert "8400" in llm.active_provider()

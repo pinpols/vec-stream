@@ -104,7 +104,7 @@ def test_ask_missing_key_401(client):
 
 
 def test_ask_valid_key_no_hits_uses_token_tenant(client, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     r = client.post("/ask", json={"query": "hello"}, headers={"X-API-Key": "key-acme"})
     assert r.status_code == 200
     assert r.json()["answer"] == "知识库中没有相关信息。"

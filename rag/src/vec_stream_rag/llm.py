@@ -1,21 +1,17 @@
-"""RAG 生成层:召回结果拼 prompt → LLM 生成带 [n] 引用的回答。
+"""RAG 生成层:召回结果拼 prompt → OpenAI 兼容 API 生成带 [n] 引用的回答。
 
-可插拔后端(LLM_PROVIDER):
-  - anthropic(默认):Anthropic Claude(原生 messages API + adaptive thinking)。
-  - openai:**OpenAI 兼容协议**,靠 OPENAI_BASE_URL 切换任意兼容服务——
-    OpenAI / DeepSeek / 通义千问 / Moonshot / 本地 Ollama(:11434/v1)/ vLLM 等都走这套。
+**统一走 OpenAI 兼容协议**(一条路):
+  - 推荐 `OPENAI_BASE_URL` 指向 **agent-ctl 网关**——自动获路由/回退/成本/缓存/全量捕获,
+    且网关侧用原生 Anthropic SDK 处理 Claude(故 rag 无需自带 anthropic 分支)。
+  - 也可直指任意 OpenAI 兼容服务:OpenAI / DeepSeek / 通义千问 / Moonshot / 本地 Ollama / vLLM。
 
-prompt 与引用规则两后端共用;usage 统一归一成 {input_tokens, output_tokens}。
+模型由 `LLM_MODEL` 指定(网关 model_aliases 里的别名,或 provider/model 直连)。
 """
+
 import os
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()
-# 模型名:优先通用 LLM_MODEL,回退各家默认
-ANTHROPIC_MODEL = os.getenv("LLM_MODEL") or os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
-OPENAI_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
-# OpenAI 兼容服务地址:留空走 openai SDK 默认(api.openai.com);
-# DeepSeek=https://api.deepseek.com  通义=https://dashscope.aliyuncs.com/compatible-mode/v1
-# Ollama=http://localhost:11434/v1  vLLM=http://localhost:8000/v1
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+# OpenAI 兼容服务地址:留空走 openai SDK 默认(api.openai.com)。指向 agent-ctl 网关 = http://host:8400/v1
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "") or None
 MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
 
@@ -41,48 +37,27 @@ def build_user_prompt(question: str, sources: list[dict]) -> str:
 
 
 def active_provider() -> str:
-    return LLM_PROVIDER
+    """当前生成目标(诊断/健康检查展示用)。统一 OpenAI 兼容,具体由 base_url / 网关决定。"""
+    return f"openai-compatible({OPENAI_BASE_URL or 'api.openai.com'})"
 
 
 def api_key_env() -> str:
-    """当前 provider 需要的 API key 环境变量名(/ask 可用性检查用)。"""
-    return "ANTHROPIC_API_KEY" if LLM_PROVIDER == "anthropic" else "OPENAI_API_KEY"
+    """生成调用需要的 API key 环境变量名。统一 OpenAI 兼容 → OPENAI_API_KEY
+    (指向 agent-ctl 网关时为占位值,真 key 配在网关侧)。"""
+    return "OPENAI_API_KEY"
 
 
 def llm_available() -> bool:
     return bool(os.getenv(api_key_env()))
 
 
-def _generate_anthropic(question: str, sources: list[dict]) -> dict:
-    import anthropic
-
-    client = anthropic.Anthropic()
-    resp = client.messages.create(
-        model=ANTHROPIC_MODEL,
-        max_tokens=max(MAX_TOKENS, 1024),
-        thinking={"type": "adaptive"},
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": build_user_prompt(question, sources)}],
-    )
-    if resp.stop_reason == "refusal":
-        return {"answer": "(模型拒绝回答该问题)", "model": ANTHROPIC_MODEL, "usage": {}}
-    answer = "".join(b.text for b in resp.content if b.type == "text")
-    return {
-        "answer": answer,
-        "model": ANTHROPIC_MODEL,
-        "usage": {
-            "input_tokens": resp.usage.input_tokens,
-            "output_tokens": resp.usage.output_tokens,
-        },
-    }
-
-
-def _generate_openai(question: str, sources: list[dict]) -> dict:
+def generate_answer(question: str, sources: list[dict]) -> dict:
+    """走 OpenAI 兼容 API 生成。返回 {answer, model, usage}。"""
     from openai import OpenAI
 
     client = OpenAI(base_url=OPENAI_BASE_URL)  # api_key 从 OPENAI_API_KEY 读
     resp = client.chat.completions.create(
-        model=OPENAI_MODEL,
+        model=LLM_MODEL,
         max_tokens=MAX_TOKENS,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -93,7 +68,7 @@ def _generate_openai(question: str, sources: list[dict]) -> dict:
     usage = getattr(resp, "usage", None)
     return {
         "answer": answer,
-        "model": OPENAI_MODEL,
+        "model": LLM_MODEL,
         "usage": {
             "input_tokens": getattr(usage, "prompt_tokens", None),
             "output_tokens": getattr(usage, "completion_tokens", None),
@@ -101,12 +76,3 @@ def _generate_openai(question: str, sources: list[dict]) -> dict:
         if usage
         else {},
     }
-
-
-def generate_answer(question: str, sources: list[dict]) -> dict:
-    """按 LLM_PROVIDER 分发到对应后端。返回 {answer, model, usage}。"""
-    if LLM_PROVIDER == "openai":
-        return _generate_openai(question, sources)
-    if LLM_PROVIDER == "anthropic":
-        return _generate_anthropic(question, sources)
-    raise ValueError(f"未知 LLM_PROVIDER={LLM_PROVIDER},支持 anthropic|openai(含 OpenAI 兼容服务)")
