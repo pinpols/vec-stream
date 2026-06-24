@@ -1,0 +1,152 @@
+"""pgvector 写入。按 DESIGN.md §3.3(b):先删该行全部旧 chunk,再写新 chunk,
+同一事务内完成,保证 chunk 数量变化时不留孤儿。
+
+连接韧性:任何 SQL 异常后必须 rollback(否则连接停在 aborted 状态,
+后续所有操作报 "current transaction is aborted");连接坏死则丢弃,
+下次操作懒重建——异常向上抛,交给消费侧的重试逻辑。
+
+make_sink() 按 cfg.vector_backend 选择 pgvector / qdrant 后端,两者同接口。"""
+import json
+
+import psycopg
+
+from .ids import vector_id
+
+
+def make_sink(cfg):
+    if cfg.vector_backend == "qdrant":
+        from .qdrant_sink import QdrantSink
+
+        return QdrantSink(cfg.qdrant_url, cfg.qdrant_collection, cfg.embed_dim)
+    return VectorSink(cfg.pg_dsn)
+
+
+class VectorSink:
+    def __init__(self, dsn: str):
+        self._dsn = dsn
+        self._conn = None
+
+    def _connection(self):
+        if self._conn is None or self._conn.closed:
+            self._conn = psycopg.connect(self._dsn, autocommit=False)
+        return self._conn
+
+    def _recover(self) -> None:
+        """异常后恢复连接可用状态:能 rollback 则 rollback,不能则丢弃重建。"""
+        try:
+            if self._conn is not None and not self._conn.closed:
+                self._conn.rollback()
+        except Exception:  # noqa: BLE001 —— 连接已坏死
+            self._conn = None
+
+    def upsert_row(
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
+        text_hash: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        metadata: dict,
+    ) -> None:
+        meta_json = json.dumps(metadata, ensure_ascii=False, default=str)
+        try:
+            conn = self._connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM doc_vectors WHERE tenant_id=%s AND source_table=%s AND source_pk=%s",
+                    (tenant_id, source_table, source_pk),
+                )
+                for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+                    cur.execute(
+                        """
+                        INSERT INTO doc_vectors
+                            (vector_id, tenant_id, source_table, source_pk,
+                             chunk_index, text_hash, content, metadata, embedding, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                        ON CONFLICT (vector_id) DO UPDATE SET
+                            text_hash = EXCLUDED.text_hash,
+                            content = EXCLUDED.content,
+                            metadata = EXCLUDED.metadata,
+                            embedding = EXCLUDED.embedding,
+                            updated_at = now()
+                        """,
+                        (
+                            vector_id(tenant_id, source_table, source_pk, i),
+                            tenant_id,
+                            source_table,
+                            source_pk,
+                            i,
+                            text_hash,
+                            chunk,
+                            meta_json,
+                            str(emb),
+                        ),
+                    )
+            conn.commit()
+        except Exception:
+            self._recover()
+            raise
+
+    def get_text_hash(self, tenant_id: str, source_table: str, source_pk: str) -> str | None:
+        """该行当前存储的 text_hash(任一 chunk 即可,同行所有 chunk 同 hash)。
+        用于去重:hash 未变则跳过 embedding 与写入(DESIGN.md §3.3 c)。"""
+        try:
+            conn = self._connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT text_hash FROM doc_vectors "
+                    "WHERE tenant_id=%s AND source_table=%s AND source_pk=%s LIMIT 1",
+                    (tenant_id, source_table, source_pk),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else None
+        except Exception:
+            self._recover()
+            raise
+
+    def update_metadata(
+        self, tenant_id: str, source_table: str, source_pk: str, metadata: dict
+    ) -> int:
+        """文本未变(hash 命中)但结构化字段可能变了:只刷 metadata,不重 embed。
+        否则 status 等过滤字段会停留在旧值,过滤检索出错。"""
+        try:
+            conn = self._connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE doc_vectors SET metadata=%s, updated_at=now() "
+                    "WHERE tenant_id=%s AND source_table=%s AND source_pk=%s",
+                    (
+                        json.dumps(metadata, ensure_ascii=False, default=str),
+                        tenant_id,
+                        source_table,
+                        source_pk,
+                    ),
+                )
+                updated = cur.rowcount
+            conn.commit()
+            return updated
+        except Exception:
+            self._recover()
+            raise
+
+    def delete_row(self, tenant_id: str, source_table: str, source_pk: str) -> int:
+        """删除该行全部 chunk(op=d),返回删除条数。"""
+        try:
+            conn = self._connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM doc_vectors WHERE tenant_id=%s AND source_table=%s AND source_pk=%s",
+                    (tenant_id, source_table, source_pk),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+            return deleted
+        except Exception:
+            self._recover()
+            raise
+
+    def close(self) -> None:
+        if self._conn is not None and not self._conn.closed:
+            self._conn.close()

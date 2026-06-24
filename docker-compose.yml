@@ -1,0 +1,97 @@
+# vecstream 基础设施:Postgres(逻辑复制 + pgvector) + Kafka + Kafka Connect(Debezium)
+# 阶段 0 用:跑通 CDC → Kafka 链路。Sync Worker / RAG 服务后续以独立服务接入。
+services:
+  postgres:
+    # pgvector 官方镜像自带 pgvector 扩展;同库既做业务源库,也做向量库(MVP 简化)
+    image: pgvector/pgvector:pg16
+    container_name: vecstream-postgres
+    command:
+      - postgres
+      - -c
+      - wal_level=logical          # Debezium 逻辑复制必需
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+    environment:
+      POSTGRES_USER: vecstream
+      POSTGRES_PASSWORD: vecstream
+      POSTGRES_DB: vecstream
+    ports:
+      # 宿主 5433:本机原生 Postgres 已占 127.0.0.1:5432
+      - "5433:5432"
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vecstream"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    # KRaft 模式单节点,免 Zookeeper
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: vecstream-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # REPLICA IDENTITY FULL 下大字段事件(含 before 镜像)易撞默认 1MB 上限
+      KAFKA_MESSAGE_MAX_BYTES: 5242880
+      CLUSTER_ID: vecstream-cluster-0001
+    volumes:
+      # 无卷则容器重建即丢 topic/offset/connector 配置(connector 配置存于 Kafka 内部 topic)
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  connect:
+    # Debezium Kafka Connect:内置 Postgres connector
+    image: debezium/connect:2.7.3.Final
+    container_name: vecstream-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: vecstream-connect
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_PRODUCER_MAX_REQUEST_SIZE: 5242880
+
+  qdrant:
+    # 阶段 3:专用向量库(与 pgvector 可切换,VECTOR_BACKEND=qdrant)
+    image: qdrant/qdrant:v1.12.4
+    container_name: vecstream-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  pgdata:
+  kafkadata:
+  qdrant_data:
