@@ -8,7 +8,7 @@
 | 子命令 | 评什么 | 依赖 |
 |--------|--------|------|
 | `retrieval`  | 检索质量:recall@k、MRR(打真 `/search`) | 跑起来的 rag 服务 + `RAG_API_KEY` |
-| `generation` | 生成质量:faithfulness / 引用覆盖率(打真 `/ask`) | rag + `RAG_API_KEY` + `ANTHROPIC_API_KEY` |
+| `generation` | 生成质量:faithfulness / 引用覆盖率(打真 `/ask`) | rag + `RAG_API_KEY` + `OPENAI_API_KEY` |
 | `reconcile`  | 一致性对账:`doc_vectors` vs 源表行数,漂移监控 | 只读 PG DSN |
 
 ## 安装
@@ -23,7 +23,7 @@ pip install -e '.[ragas]'   # 可选:生成质量用 RAGAS 重依赖(不装走�
 
 - `RAG_API_KEY`：调 `/search`、`/ask` 必带的 `X-API-Key`(租户由 key 推导,不可自选)。
 - `RAG_URL`：rag 服务地址,默认 `http://localhost:8000`。
-- `ANTHROPIC_API_KEY`：`/ask` 真跑需要;缺失时 `generation` 跳过并提示(不算失败)。
+- `OPENAI_API_KEY`：`/ask` 真跑需要;缺失时 `generation` 跳过并提示(不算失败)。
 - `RAG_PG_DSN` / `PG_DSN`：`reconcile` 连 PG 的 DSN(只读即可)。
 
 ## 用法

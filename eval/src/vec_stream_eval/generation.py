@@ -7,7 +7,7 @@
                            (越界/虚构的引用编号拉低该值)。命中数 / 引用总数。
       cited_sentence_ratio —— 含 [n] 引用标记的句子占全部句子的比例(句子有无 source 支撑的近似)。
 
-/ask 需要 ANTHROPIC_API_KEY 才能真跑;无 key 时跳过并提示(不算失败)。
+/ask 需要 OPENAI_API_KEY 才能真跑(rag 生成层走 OpenAI 兼容协议);无 key 时跳过并提示(不算失败)。
 """
 from __future__ import annotations
 
@@ -178,9 +178,9 @@ def run(
     api_key = os.getenv("RAG_API_KEY")
     if not api_key:
         raise SystemExit("缺少 RAG_API_KEY 环境变量(rag /ask 需要 X-API-Key 鉴权)")
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        print("跳过生成质量评估:未配置 ANTHROPIC_API_KEY,rag /ask 不可用。")
-        print("(检索质量 retrieval 与对账 reconcile 不受影响。)")
+    if not os.getenv("OPENAI_API_KEY"):
+        print("跳过生成质量评估:未配置 OPENAI_API_KEY,rag /ask 不可用。")
+        print("(rag 生成层走 OpenAI 兼容协议;检索 retrieval 与对账 reconcile 不受影响。)")
         return None
 
     queries = load_golden(golden_path)

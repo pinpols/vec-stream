@@ -1,6 +1,6 @@
 """RAG 服务(阶段 2):
   POST /search — 语义搜索:embed → tenant/status 过滤召回 → 可选 rerank
-  POST /ask    — RAG 问答:召回 → rerank → Claude 生成带 [n] 引用
+  POST /ask    — RAG 问答:召回 → rerank → OpenAI 兼容 API 生成带 [n] 引用
 """
 import json
 import logging
@@ -303,7 +303,7 @@ def ask(req: AskRequest, tenant_id: str = Depends(require_tenant)):
     if not llm_available():
         raise HTTPException(
             503,
-            f"{api_key_env()} 未配置(LLM_PROVIDER={active_provider()}),/ask 不可用(/search 不受影响)",
+            f"{api_key_env()} 未配置({active_provider()}),/ask 不可用(/search 不受影响)",
         )
     # tenant 来自鉴权 token,忽略 req.tenant_id(不可信)。
     hits = retrieve(req.query, tenant_id, req.top_k, req.status)
