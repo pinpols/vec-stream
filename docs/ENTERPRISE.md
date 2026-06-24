@@ -1,7 +1,23 @@
 # 企业级演进规划 · cdc-vector-rag
 
-> 版本:v0.1 · 日期:2026-06-10 · 状态:规划
-> 前置:[`DESIGN.md`](DESIGN.md)(MVP 设计)· 当前已完成阶段 0–3 + 健壮性修复
+> 版本:v0.2 · 日期:2026-06-24 · 状态:规划 + **M1 上线阻断项已落地**
+> 前置:[`DESIGN.md`](DESIGN.md)(MVP 设计)· 当前已完成阶段 0–3 + 健壮性修复 + M1 安全/一致性加固
+
+---
+
+## M1 已落地(2026-06-24)
+
+5 项「上线阻断项」全部完成,落地一句话指引(详见各 §1 对应行):
+
+| M1 项 | 落地 | 关键文件 |
+|---|---|---|
+| 处理账本(offset 写入原子性) | `processed_offsets` 表与向量 upsert/delete **同事务**提交;Qdrant 后端记 PG(best-effort) | `db/init/02-security.sh`、`worker/.../sink.py`、`main.py` |
+| 租户隔离强制化(RLS) | `doc_vectors` 开行级安全,策略按 `current_setting('app.tenant')`;`vs_rag` 无 BYPASSRLS,查询前 `set_config('app.tenant')`——**漏写 WHERE 也越权不了**(实测:设 A 只见 A、不设见 0 行、rag 越权写被拒) | `db/init/02-security.sh`、`rag/.../app.py` |
+| PG 最小权限账号 | 三专用角色:`vs_debezium`(LOGIN+REPLICATION+源表 SELECT)/`vs_worker`(向量+账本 DML+BYPASSRLS)/`vs_rag`(只读·受 RLS),CDC 不再用超级账号 | `db/init/02-security.sh` |
+| RAG API 认证 + token 即租户 | `X-API-Key`→租户(`RAG_API_KEYS` JSON),**租户从 key 推导不信任请求体**,并与 RLS 闭环 | `rag/.../app.py` |
+| Secrets 管理 | 凭据移出代码进 `.env`(gitignore);compose env 注入;Debezium 密码注册时注入不落盘 | `.env.example`、`docker-compose.yml`、`debezium/register.sh` |
+
+> 复刻验证:`docker compose up -d`(自动跑 01-init + 02-security)→ `./debezium/register.sh`;单测 `worker/.venv/bin/python -m pytest worker/tests`(38)、`rag/.venv/bin/python -m pytest rag/tests`(12)。
 
 ---
 

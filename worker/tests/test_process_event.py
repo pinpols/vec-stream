@@ -22,11 +22,11 @@ class FakeSink:
     def upsert_row(self, **kw):
         self.upserts.append(kw)
 
-    def update_metadata(self, tenant_id, source_table, source_pk, metadata):
+    def update_metadata(self, tenant_id, source_table, source_pk, metadata, offset_ref=None):
         self.metadata_updates.append((tenant_id, source_table, source_pk, metadata))
         return 1
 
-    def delete_row(self, tenant_id, source_table, source_pk):
+    def delete_row(self, tenant_id, source_table, source_pk, offset_ref=None):
         self.deletes.append((tenant_id, source_table, source_pk))
         return 2
 

@@ -6,14 +6,15 @@
 
     "database.hostname": "postgres",
     "database.port": "5432",
-    "database.user": "vecstream",
-    "database.password": "vecstream",
+    "database.user": "vs_debezium",
+    "database.password": "__DEBEZIUM_PASSWORD__",
     "database.dbname": "vecstream",
 
     "topic.prefix": "cdc",
     "plugin.name": "pgoutput",
     "slot.name": "vecstream_slot",
     "publication.name": "vecstream_pub",
+    "publication.autocreate.mode": "disabled",
 
     "table.include.list": "public.article,public.product,public.comment",
     "snapshot.mode": "initial",

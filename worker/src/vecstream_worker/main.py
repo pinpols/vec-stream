@@ -58,9 +58,15 @@ def build_source_text(after: dict, fields: list[str]) -> str:
     return "\n".join(str(after[f]) for f in fields if after.get(f))
 
 
-def process_event(event: dict, table: str, cfg: Config, embedder, sink, source_db=None) -> str:
+def process_event(
+    event: dict, table: str, cfg: Config, embedder, sink, source_db=None,
+    offset_ref: tuple[str, int, int] | None = None,
+) -> str:
     """处理单条 CDC 事件,返回动作标签
-    (upserted/skipped/metadata_refreshed/deleted/ignored),便于测试与统计。"""
+    (upserted/skipped/metadata_refreshed/deleted/ignored),便于测试与统计。
+
+    offset_ref=(topic, partition, offset):当前消息的 Kafka 坐标,透传给 sink
+    与向量写入同事务写进 processed_offsets 处理账本(M1 审计闭环)。"""
     table_cfg = cfg.tables.get(table)
     if table_cfg is None:
         log.info("table %s not configured, ignore", table)
@@ -84,7 +90,8 @@ def process_event(event: dict, table: str, cfg: Config, embedder, sink, source_d
             return "ignored"
         log.info("%s 变更 → 重建父文档 %s pk=%s", table, parent_table, fk)
         return process_event(
-            {"op": "u", "after": parent_row}, parent_table, cfg, embedder, sink, source_db
+            {"op": "u", "after": parent_row}, parent_table, cfg, embedder, sink, source_db,
+            offset_ref=offset_ref,
         )
 
     pk_field = table_cfg.get("pk", "id")
@@ -103,7 +110,7 @@ def process_event(event: dict, table: str, cfg: Config, embedder, sink, source_d
             current = source_db.fetch_row(table, pk_field, pk)
             if current is None:
                 tenant = after.get("tenant_id", "default")
-                deleted = sink.delete_row(tenant, table, str(pk))
+                deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
                 log.info("%s pk=%s 源行已不存在,清理向量 %d 条", table, pk, deleted)
                 return "deleted"
             after = current
@@ -130,7 +137,7 @@ def process_event(event: dict, table: str, cfg: Config, embedder, sink, source_d
         }
         # hash 去重:文本未变只刷 metadata(status 等过滤字段必须跟上),跳过最贵的 embedding
         if sink.get_text_hash(tenant, table, str(pk)) == new_hash:
-            sink.update_metadata(tenant, table, str(pk), metadata)
+            sink.update_metadata(tenant, table, str(pk), metadata, offset_ref=offset_ref)
             log.info("%s pk=%s hash unchanged, metadata refreshed (op=%s)", table, pk, op)
             return "metadata_refreshed"
         chunks = split_text(source_text, cfg.chunk_size, cfg.chunk_overlap)
@@ -144,6 +151,7 @@ def process_event(event: dict, table: str, cfg: Config, embedder, sink, source_d
             chunks=chunks,
             embeddings=embeddings,
             metadata=metadata,
+            offset_ref=offset_ref,
         )
         log.info("upserted %s pk=%s chunks=%d op=%s", table, pk, len(chunks), op)
         return "upserted"
@@ -155,7 +163,7 @@ def process_event(event: dict, table: str, cfg: Config, embedder, sink, source_d
             log.warning("op=d without before image, ignore: %s", event)
             return "ignored"
         tenant = before.get("tenant_id", "default")
-        deleted = sink.delete_row(tenant, table, str(pk))
+        deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
         log.info("deleted %s pk=%s chunks=%d", table, pk, deleted)
         return "deleted"
 
@@ -168,6 +176,8 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
     (阻塞本分区是正确行为:至少一次 + 有序消费;max.poll.interval 已调大配合)。
     任何路径结束后调用方 commit。"""
     table = table_from_topic(msg.topic())
+    # 当前消息的 Kafka 坐标 → 与向量写入同事务写进处理账本(PG 侧审计真相源)
+    offset_ref = (msg.topic(), msg.partition(), msg.offset())
     last_err: Exception | None = None
     data_attempts = 0
     transient_attempts = 0
@@ -175,7 +185,9 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
         try:
             event = json.loads(msg.value())
             if event is not None:
-                action = process_event(event, table, cfg, embedder, sink, source_db)
+                action = process_event(
+                    event, table, cfg, embedder, sink, source_db, offset_ref=offset_ref
+                )
                 EVENTS.labels(table=table, action=action).inc()
                 if event.get("ts_ms"):
                     SYNC_DELAY.observe(max(0.0, time.time() - event["ts_ms"] / 1000))

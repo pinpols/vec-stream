@@ -2,8 +2,12 @@
 -- MVP 简化:同一个 PG 既当业务源库(被 CDC 监听),又当向量库(pgvector)。
 -- 生产应拆分,这里为了阶段 0 快速跑通合并。
 
--- 1) 向量扩展
+-- 0) 向量扩展
 CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 注:最小权限角色(debezium/worker/rag)、行级安全(RLS)、处理账本、授权、
+-- CDC publication 全部在 02-security.sh —— 它能从环境变量安全注入密码
+-- (psql -v 注入,SQL 无法直接读 bash 变量),本文件只负责 schema 与样例数据。
 
 -- 2) 业务源表示例:article(会被 Debezium 监听)
 CREATE TABLE IF NOT EXISTS article (
@@ -63,3 +67,5 @@ INSERT INTO article (tenant_id, title, body) VALUES
     ('default', 'pgvector 入门', 'pgvector 是 PostgreSQL 的向量检索扩展,支持 HNSW 与 IVFFlat 索引。'),
     ('default', 'Debezium 是什么', 'Debezium 基于数据库 redo/WAL 日志做 CDC,捕获行级变更并发往 Kafka。')
 ON CONFLICT DO NOTHING;
+
+-- 角色 / 授权 / RLS / 处理账本 / publication —— 见 02-security.sh(在本文件之后执行)。

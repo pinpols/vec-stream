@@ -17,7 +17,9 @@ def make_sink(cfg):
     if cfg.vector_backend == "qdrant":
         from .qdrant_sink import QdrantSink
 
-        return QdrantSink(cfg.qdrant_url, cfg.qdrant_collection, cfg.embed_dim)
+        # Qdrant 无 PG 事务,账本 best-effort 记进 PG(用 worker 的 pg_dsn)
+        return QdrantSink(cfg.qdrant_url, cfg.qdrant_collection, cfg.embed_dim,
+                          ledger_dsn=cfg.pg_dsn)
     return VectorSink(cfg.pg_dsn)
 
 
@@ -39,6 +41,42 @@ class VectorSink:
         except Exception:  # noqa: BLE001 —— 连接已坏死
             self._conn = None
 
+    @staticmethod
+    def _record_offset(cur, offset_ref: tuple[str, int, int] | None) -> None:
+        """在向量写入同一事务内 upsert 处理账本(commit 之前)。
+        单调推进:WHERE 守卫只在 offset 前进时更新,乱序/重投的旧 offset 不回退。
+        offset_ref 为空则 no-op(调用方不带 offset 时退化为纯向量写入)。"""
+        if offset_ref is None:
+            return
+        topic, partition, last_offset = offset_ref
+        cur.execute(
+            """
+            INSERT INTO processed_offsets(topic, partition, last_offset, processed_at)
+            VALUES (%s, %s, %s, now())
+            ON CONFLICT (topic, partition) DO UPDATE
+              SET last_offset = EXCLUDED.last_offset, processed_at = now()
+              WHERE EXCLUDED.last_offset > processed_offsets.last_offset
+            """,
+            (topic, partition, last_offset),
+        )
+
+    def last_processed_offset(self, topic: str, partition: int) -> int | None:
+        """账本里该 (topic, partition) 的最新已处理 offset,供测试/审计查询。"""
+        try:
+            conn = self._connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT last_offset FROM processed_offsets "
+                    "WHERE topic=%s AND partition=%s",
+                    (topic, partition),
+                )
+                row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else None
+        except Exception:
+            self._recover()
+            raise
+
     def upsert_row(
         self,
         tenant_id: str,
@@ -48,6 +86,7 @@ class VectorSink:
         chunks: list[str],
         embeddings: list[list[float]],
         metadata: dict,
+        offset_ref: tuple[str, int, int] | None = None,
     ) -> None:
         meta_json = json.dumps(metadata, ensure_ascii=False, default=str)
         try:
@@ -83,6 +122,8 @@ class VectorSink:
                             str(emb),
                         ),
                     )
+                # 账本与向量写入同事务提交,形成"处理一次"审计真相源
+                self._record_offset(cur, offset_ref)
             conn.commit()
         except Exception:
             self._recover()
@@ -107,7 +148,8 @@ class VectorSink:
             raise
 
     def update_metadata(
-        self, tenant_id: str, source_table: str, source_pk: str, metadata: dict
+        self, tenant_id: str, source_table: str, source_pk: str, metadata: dict,
+        offset_ref: tuple[str, int, int] | None = None,
     ) -> int:
         """文本未变(hash 命中)但结构化字段可能变了:只刷 metadata,不重 embed。
         否则 status 等过滤字段会停留在旧值,过滤检索出错。"""
@@ -125,13 +167,17 @@ class VectorSink:
                     ),
                 )
                 updated = cur.rowcount
+                self._record_offset(cur, offset_ref)
             conn.commit()
             return updated
         except Exception:
             self._recover()
             raise
 
-    def delete_row(self, tenant_id: str, source_table: str, source_pk: str) -> int:
+    def delete_row(
+        self, tenant_id: str, source_table: str, source_pk: str,
+        offset_ref: tuple[str, int, int] | None = None,
+    ) -> int:
         """删除该行全部 chunk(op=d),返回删除条数。"""
         try:
             conn = self._connection()
@@ -141,6 +187,7 @@ class VectorSink:
                     (tenant_id, source_table, source_pk),
                 )
                 deleted = cur.rowcount
+                self._record_offset(cur, offset_ref)
             conn.commit()
             return deleted
         except Exception:

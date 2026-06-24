@@ -14,9 +14,14 @@ services:
       - -c
       - max_wal_senders=4
     environment:
-      POSTGRES_USER: vecstream
-      POSTGRES_PASSWORD: vecstream
-      POSTGRES_DB: vecstream
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-vecstream}
+      POSTGRES_INITDB_ARGS: -c shared_preload_libraries=pgcrypto
+      # 密钥供初始化脚本生成用户密码
+      DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD}
+      WORKER_PASSWORD: ${WORKER_PASSWORD}
+      RAG_PASSWORD: ${RAG_PASSWORD}
     ports:
       # 宿主 5433:本机原生 Postgres 已占 127.0.0.1:5432
       - "5433:5432"
@@ -24,7 +29,7 @@ services:
       - ./db/init:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vecstream"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -72,7 +77,7 @@ services:
     ports:
       - "8083:8083"
     environment:
-      BOOTSTRAP_SERVERS: kafka:29092
+      BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
       GROUP_ID: vecstream-connect
       CONFIG_STORAGE_TOPIC: _connect_configs
       OFFSET_STORAGE_TOPIC: _connect_offsets
@@ -81,6 +86,10 @@ services:
       OFFSET_STORAGE_REPLICATION_FACTOR: 1
       STATUS_STORAGE_REPLICATION_FACTOR: 1
       CONNECT_PRODUCER_MAX_REQUEST_SIZE: 5242880
+      # 可选:Kafka security
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM}
+      KAFKA_SASL_JAAS_CONFIG: ${KAFKA_SASL_JAAS_CONFIG}
 
   qdrant:
     # 阶段 3:专用向量库(与 pgvector 可切换,VECTOR_BACKEND=qdrant)

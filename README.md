@@ -18,13 +18,15 @@ MySQL / PostgreSQL → Debezium → Kafka → Vector Sync Worker → 向量库(p
 > 阶段 0:先把 CDC 链路的底座跑起来(Postgres + Kafka + Debezium),再接 Sync Worker。
 
 ```bash
-# 启动 Postgres(开启逻辑复制)、Kafka、Kafka Connect(含 Debezium)
+# 0) 准备凭据:复制 .env.example → .env,改成强随机密码(.env 已 gitignore)
+cp .env.example .env && $EDITOR .env
+
+# 1) 启动 Postgres(逻辑复制 + 最小权限角色 + RLS)、Kafka、Kafka Connect
+#    首次初始化会跑 db/init/01-init.sql(schema)+ 02-security.sh(角色/RLS/账本/publication)
 docker compose up -d
 
-# 注册 Debezium Postgres connector(监听示例表)
-curl -X POST http://localhost:8083/connectors \
-  -H 'Content-Type: application/json' \
-  -d @debezium/register-postgres.json
+# 2) 注册 Debezium connector(用最小权限 vs_debezium,密码由脚本从 .env 注入,不落盘明文)
+./debezium/register.sh
 
 # 查看 connector 状态
 curl http://localhost:8083/connectors/vecstream-pg/status

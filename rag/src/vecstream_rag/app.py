@@ -2,11 +2,12 @@
   POST /search — 语义搜索:embed → tenant/status 过滤召回 → 可选 rerank
   POST /ask    — RAG 问答:召回 → rerank → Claude 生成带 [n] 引用
 """
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
@@ -16,7 +17,12 @@ from .rerank import Reranker
 
 log = logging.getLogger("rag")
 
-PG_DSN = os.getenv("PG_DSN", "postgresql://vecstream:vecstream@localhost:5433/vecstream")
+# rag 用最小权限只读角色 vs_rag(不 BYPASSRLS):优先 RAG_PG_DSN,回退 PG_DSN。
+# 默认连 vs_rag,查询前必须 SET app.tenant 否则 RLS 命中 0 行。
+PG_DSN = os.getenv(
+    "RAG_PG_DSN",
+    os.getenv("PG_DSN", "postgresql://vs_rag:vs_rag@localhost:5433/vecstream"),
+)
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
@@ -54,9 +60,35 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="vecstream-rag", lifespan=lifespan)
 
 
+def _load_api_keys() -> dict[str, str]:
+    """从环境变量 RAG_API_KEYS 读 JSON:{"<api-key>": "<tenant_id>"}。
+    每次请求时调用以便测试可 monkeypatch env(数据量小,无性能顾虑)。"""
+    raw = os.getenv("RAG_API_KEYS", "{}")
+    try:
+        keys = json.loads(raw)
+    except json.JSONDecodeError:
+        log.error("RAG_API_KEYS 不是合法 JSON,鉴权将全部拒绝")
+        return {}
+    if not isinstance(keys, dict):
+        log.error("RAG_API_KEYS 必须是 JSON 对象 {api-key: tenant_id}")
+        return {}
+    return {str(k): str(v) for k, v in keys.items()}
+
+
+def require_tenant(x_api_key: str | None = Header(default=None)) -> str:
+    """API key 鉴权依赖:X-API-Key → tenant_id;无效/缺失 → 401。
+    返回认证后的 tenant_id(token 即租户,调用方不可自选)。"""
+    keys = _load_api_keys()
+    tenant = keys.get(x_api_key) if x_api_key else None
+    if not tenant:
+        raise HTTPException(status_code=401, detail="无效或缺失的 X-API-Key")
+    return tenant
+
+
 class SearchRequest(BaseModel):
     query: str
-    tenant_id: str = "default"
+    # tenant_id 来自鉴权 token,不信请求体;此字段保留兼容但被忽略/覆盖。
+    tenant_id: str | None = Field(default=None, deprecated=True)
     top_k: int = Field(default=5, ge=1, le=50)
     status: str | None = None  # 按 metadata.status 过滤,如 published
     rerank: bool = False
@@ -74,7 +106,8 @@ class SearchHit(BaseModel):
 
 class AskRequest(BaseModel):
     query: str
-    tenant_id: str = "default"
+    # tenant_id 来自鉴权 token,不信请求体;此字段保留兼容但被忽略/覆盖。
+    tenant_id: str | None = Field(default=None, deprecated=True)
     top_k: int = Field(default=12, ge=1, le=50)   # 召回数
     top_n: int = Field(default=4, ge=1, le=10)    # rerank 后喂给模型的数
     status: str | None = None
@@ -104,8 +137,16 @@ def retrieve(query: str, tenant_id: str, top_k: int, status: str | None) -> list
     return _retrieve_pgvector(qvec, tenant_id, top_k, status)
 
 
+def _set_app_tenant(cur, tenant_id: str) -> None:
+    """RLS 闭环:连接池复用连接,每次借出都要重设 app.tenant。
+    用事务级 set_config(..., true):autocommit 下每条语句即一个事务,
+    与紧随其后的查询同事务,租户随用随设、不串号(参数化防注入)。"""
+    cur.execute("SELECT set_config('app.tenant', %s, true)", (tenant_id,))
+
+
 def _retrieve_pgvector(qvec: list[float], tenant_id: str, top_k: int, status: str | None) -> list[dict]:
     vec = str(qvec)
+    # WHERE tenant_id 保留做双保险;真正强制隔离靠 RLS(SET app.tenant)。
     sql = """
         SELECT content, 1 - (embedding <=> %(v)s::vector) AS score,
                source_table, source_pk, chunk_index, metadata
@@ -116,8 +157,10 @@ def _retrieve_pgvector(qvec: list[float], tenant_id: str, top_k: int, status: st
         LIMIT %(k)s
     """
     with state["pool"].connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, {"v": vec, "tenant": tenant_id, "status": status, "k": top_k})
-        rows = cur.fetchall()
+        with conn.transaction():
+            _set_app_tenant(cur, tenant_id)
+            cur.execute(sql, {"v": vec, "tenant": tenant_id, "status": status, "k": top_k})
+            rows = cur.fetchall()
     return [
         {
             "content": r[0], "score": round(float(r[1]), 4), "source_table": r[2],
@@ -170,25 +213,35 @@ def healthz():
 
 
 @app.get("/stats")
-def stats():
-    """向量库大盘:总量 + 按表/租户分布(worker 侧指标见其 :9100/metrics)。"""
+def stats(tenant_id: str = Depends(require_tenant)):
+    """向量库大盘:鉴权后只统计本租户(pgvector 同样 SET app.tenant 走 RLS)。"""
     if VECTOR_BACKEND == "qdrant":
-        from qdrant_client import models  # noqa: F401
+        from qdrant_client import models
 
-        total = state["qdrant"].count(QDRANT_COLLECTION).count
+        flt = models.Filter(
+            must=[models.FieldCondition(
+                key="tenant_id", match=models.MatchValue(value=tenant_id)
+            )]
+        )
+        total = state["qdrant"].count(
+            QDRANT_COLLECTION, count_filter=flt
+        ).count
         by_table = {
             str(hit.value): hit.count
             for hit in state["qdrant"].facet(
-                collection_name=QDRANT_COLLECTION, key="source_table"
+                collection_name=QDRANT_COLLECTION, key="source_table", facet_filter=flt
             ).hits
         }
         return {"backend": "qdrant", "total_vectors": total, "by_table": by_table}
     with state["pool"].connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT source_table, tenant_id, count(*) FROM doc_vectors "
-            "GROUP BY source_table, tenant_id ORDER BY 1, 2"
-        )
-        rows = cur.fetchall()
+        with conn.transaction():
+            _set_app_tenant(cur, tenant_id)
+            # RLS 已限定本租户;GROUP BY tenant_id 保留兼容返回结构。
+            cur.execute(
+                "SELECT source_table, tenant_id, count(*) FROM doc_vectors "
+                "GROUP BY source_table, tenant_id ORDER BY 1, 2"
+            )
+            rows = cur.fetchall()
     return {
         "backend": "pgvector",
         "total_vectors": sum(r[2] for r in rows),
@@ -199,18 +252,20 @@ def stats():
 
 
 @app.post("/search", response_model=list[SearchHit])
-def search(req: SearchRequest):
-    hits = retrieve(req.query, req.tenant_id, req.top_k, req.status)
+def search(req: SearchRequest, tenant_id: str = Depends(require_tenant)):
+    # tenant 来自鉴权 token,忽略 req.tenant_id(不可信)。
+    hits = retrieve(req.query, tenant_id, req.top_k, req.status)
     if req.rerank:
         hits = apply_rerank(req.query, hits, req.top_k)
     return [SearchHit(**h) for h in hits]
 
 
 @app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest):
+def ask(req: AskRequest, tenant_id: str = Depends(require_tenant)):
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(503, "ANTHROPIC_API_KEY 未配置,/ask 不可用(/search 不受影响)")
-    hits = retrieve(req.query, req.tenant_id, req.top_k, req.status)
+    # tenant 来自鉴权 token,忽略 req.tenant_id(不可信)。
+    hits = retrieve(req.query, tenant_id, req.top_k, req.status)
     if not hits:
         return AskResponse(
             answer="知识库中没有相关信息。", sources=[], model="", usage={}

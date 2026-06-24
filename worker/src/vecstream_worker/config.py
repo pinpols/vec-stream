@@ -31,8 +31,12 @@ class Config:
     # 正则订阅:新表只要进了 Debezium 的 table.include.list 并配好 tables,无需改订阅
     kafka_topic_pattern: str = os.getenv("KAFKA_TOPIC_PATTERN", r"^cdc\.public\..*")
     kafka_group_id: str = os.getenv("KAFKA_GROUP_ID", "vecstream-worker")
-    pg_dsn: str = os.getenv(
-        "PG_DSN", "postgresql://vecstream:vecstream@localhost:5433/vecstream"
+    # worker 用最小权限角色 vs_worker(doc_vectors/processed_offsets DML),
+    # 不再默认超级账号:优先 WORKER_PG_DSN,回退共享 PG_DSN,再回退本地 vs_worker 默认
+    pg_dsn: str = (
+        os.getenv("WORKER_PG_DSN")
+        or os.getenv("PG_DSN")
+        or "postgresql://vs_worker:vs_worker@localhost:5433/vecstream"
     )
     embed_model: str = os.getenv("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
     embed_dim: int = int(os.getenv("EMBED_DIM", "512"))
