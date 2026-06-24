@@ -55,7 +55,7 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       # REPLICA IDENTITY FULL 下大字段事件(含 before 镜像)易撞默认 1MB 上限
       KAFKA_MESSAGE_MAX_BYTES: 5242880
-      CLUSTER_ID: vec-stream-cluster-0001
+      CLUSTER_ID: vec-stream-cluster-001
     volumes:
       # 无卷则容器重建即丢 topic/offset/connector 配置(connector 配置存于 Kafka 内部 topic)
       - kafkadata:/var/lib/kafka/data
