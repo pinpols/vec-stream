@@ -34,9 +34,10 @@ TRANSIENT_ERRORS = (
 
 from .chunker import split_text
 from .config import Config
-from .embedder import Embedder
+from .embedder import make_embedder
 from .ids import text_hash
 from .metrics import CHUNKS_EMBEDDED, DLQ_SENT, EVENTS, SYNC_DELAY, start_metrics
+from .schema_check import check_schema
 from .sink import make_sink
 from .slot_monitor import start_monitor
 from .source_db import SourceDB
@@ -207,6 +208,10 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
             time.sleep(cfg.retry_backoff_s * (2 ** (data_attempts - 1)))
     log.error("retries exhausted, send to DLQ %s: %s", cfg.dlq_topic, last_err)
     DLQ_SENT.inc()
+    # 透传 replay_count:若本条是 dlq_replay 回投的消息(带 replay_count header),
+    # 失败再进 DLQ 时计数随之累加,达上限后由 dlq_replay 归档,不再无限重投。
+    incoming = dict(msg.headers() or [])
+    replay_count = (incoming.get("replay_count") or b"0").decode() or "0"
     dlq.produce(
         cfg.dlq_topic,
         key=msg.key(),
@@ -216,6 +221,7 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
             "source_partition": str(msg.partition()),
             "source_offset": str(msg.offset()),
             "error": str(last_err)[:500],
+            "replay_count": replay_count,
         },
     )
     dlq.flush(10)
@@ -223,8 +229,10 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
 
 def run() -> None:
     cfg = Config()
-    log.info("loading embedding model %s ...", cfg.embed_model)
-    embedder = Embedder(cfg.embed_model)
+    # M2:启动期 schema 校验(改列/删列快速失败)。可用 SCHEMA_CHECK=false 跳过。
+    if cfg.schema_check:
+        check_schema(cfg.pg_dsn, cfg.tables)
+    embedder = make_embedder(cfg)  # EMBED_SERVICE_URL 非空走 HTTP,否则进程内
     sink = make_sink(cfg)
     source_db = SourceDB(cfg.pg_dsn)
     log.info("vector backend: %s", cfg.vector_backend)

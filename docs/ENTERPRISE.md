@@ -17,7 +17,22 @@
 | RAG API 认证 + token 即租户 | `X-API-Key`→租户(`RAG_API_KEYS` JSON),**租户从 key 推导不信任请求体**,并与 RLS 闭环 | `rag/.../app.py` |
 | Secrets 管理 | 凭据移出代码进 `.env`(gitignore);compose env 注入;Debezium 密码注册时注入不落盘 | `.env.example`、`docker-compose.yml`、`debezium/register.sh` |
 
-> 复刻验证:`docker compose up -d`(自动跑 01-init + 02-security)→ `./debezium/register.sh`;单测 `worker/.venv/bin/python -m pytest worker/tests`(38)、`rag/.venv/bin/python -m pytest rag/tests`(12)。
+> 复刻验证:`docker compose up -d`(自动跑 01-init + 02-security)→ `./debezium/register.sh`;单测 `worker/.venv/bin/python -m pytest worker/tests`、`rag/.venv/bin/python -m pytest rag/tests`。
+
+## M2 已落地(2026-06-24)
+
+「生产必需」6 项 ✅该做 全部完成(M3 的 🔴越界项按本文档判定**显式不做**,仅留 §3 知识卡片)。操作手册见 [`runbook-m2.md`](runbook-m2.md)。
+
+| M2 项 | 落地 | 关键文件 |
+|---|---|---|
+| Embedding 拆独立服务 | FastAPI + 动态批处理 + 背压;worker/rag 设 `EMBED_SERVICE_URL` 即切 HTTP,空则进程内(向量可互换无需重建索引) | `embed-service/`、`worker/.../embedder.py`、`rag/.../app.py` |
+| 质量评估 + 一致性对账 | recall@k/MRR(检索)+ 引用忠实度/RAGAS(生成)+ 向量vs源表漂移(对账);golden set | `eval/`(34 单测) |
+| 告警规则 + SLO | Prometheus 规则(同步延迟 p99 / DLQ / slot / worker 掉线,用真实指标名)+ Grafana 大盘 | `monitoring/`、`docker-compose.monitoring.yml` |
+| DLQ 工具链增强 | 重投次数上限 `DLQ_MAX_REPLAYS`,超限落档 `dead_letter_archive`(不无限重投);replay_count 往返累加 | `worker/.../dlq_replay.py`、`main.py`、`02-security.sh` |
+| 蓝绿索引切换 | 新 collection+新 group+新模型双写 → eval 评估达标 → 切流量(runbook §5);Qdrant collection 为切换单元 | `runbook-m2.md` |
+| 水平扩展 + schema 校验 | 同 group 多实例按分区并行(代码已支持,runbook §6 验证流程);启动校验配置字段存在,改列/删列快速失败 | `worker/.../schema_check.py`、`runbook-m2.md` |
+
+> M3(Kafka 3 节点 / Connect distributed / PG failover / exactly-once / Schema Registry / 传输加密 / OTel / ELK / 删除合规)按 §2/§3 判定**默认不做**——纯运维/合规工程,本机跑不动且偏离学习目标,生产应如何做见 §3 知识卡片。
 
 ---
 

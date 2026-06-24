@@ -1,0 +1,106 @@
+# Prometheus 告警规则 —— ENTERPRISE.md M2 领域四 item 7(告警规则 + SLO)
+#
+# 指标名取自 worker/src/vecstream_worker/metrics.py(权威),不可臆造:
+#   vecstream_sync_delay_seconds   (Histogram) Debezium 事件时间 → worker 完成的延迟
+#   vecstream_dlq_sent_total       (Counter)   投递到 DLQ 的消息数
+#   vecstream_slot_active          (Gauge)     replication slot active(1/0),来自 slot_monitor.py
+#   vecstream_slot_lag_bytes       (Gauge)     replication slot WAL lag 字节,来自 slot_monitor.py
+#   vecstream_dlq_backlog          (Gauge)     DLQ 未被 replay group 消费的积压
+#   vecstream_chunks_embedded_total(Counter)   嵌入的 chunk 数(贵调用)
+#   up{job="vecstream-worker"}                 worker 抓取存活探针
+#
+# ── SLO 汇总 ────────────────────────────────────────────────────────────
+#   SLO-1  CDC→向量同步延迟 p99 < 60s                       → HighSyncDelay
+#   SLO-2  DLQ 投递速率 ≈ 0(无持续失败);积压可被 replay 清空 → DlqGrowing / DlqBacklogStuck
+#   SLO-3  replication slot 始终 active 且 lag < 256MB        → SlotInactive / SlotLagHigh
+#   SLO-4  worker 可用性(被抓取存活)                          → WorkerDown
+# ────────────────────────────────────────────────────────────────────────
+groups:
+  - name: vecstream-sync
+    rules:
+      # SLO-1: 同步延迟 p99 < 60s。histogram_quantile 用 5m 速率窗口聚合各 bucket。
+      # 触发:p99 延迟持续 5m 超过 60s(buckets 含 60 边界,可精确判定)。
+      - alert: HighSyncDelay
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum(rate(vecstream_sync_delay_seconds_bucket{job="vecstream-worker"}[5m])) by (le)
+          ) > 60
+        for: 5m
+        labels:
+          severity: warning
+          slo: sync-delay-p99-60s
+        annotations:
+          summary: "CDC 同步延迟 p99 过高(>60s)"
+          description: "近 5m 的 vecstream_sync_delay_seconds p99 = {{ $value | humanizeDuration }},超过 SLO 阈值 60s。可能原因:嵌入服务变慢 / Qdrant 写入背压 / 消费滞后。"
+
+  - name: vecstream-dlq
+    rules:
+      # SLO-2: DLQ 投递速率 ≈ 0。任何持续的 DLQ 写入都表示有消息处理失败被丢进死信。
+      # 触发:近 5m DLQ_SENT 速率 > 0 持续 10m(短暂尖刺不告警,持续失败才告警)。
+      - alert: DlqGrowing
+        expr: |
+          sum(rate(vecstream_dlq_sent_total{job="vecstream-worker"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          slo: dlq-rate-zero
+        annotations:
+          summary: "DLQ 持续增长(有消息处理失败)"
+          description: "近 5m DLQ 投递速率 = {{ $value | printf \"%.4f\" }} msg/s,持续 10m。表示存在反复失败的 CDC 事件被丢入死信队列,需排查 worker 错误日志。"
+
+      # SLO-2: 积压应能被 {group}-dlq-replay 清空。积压长期不降说明 replay 未跟上或停滞。
+      # 触发:DLQ_BACKLOG > 100 持续 15m。
+      - alert: DlqBacklogStuck
+        expr: |
+          max(vecstream_dlq_backlog{job="vecstream-worker"}) > 100
+        for: 15m
+        labels:
+          severity: warning
+          slo: dlq-backlog-drained
+        annotations:
+          summary: "DLQ 积压居高不下(replay 未跟上)"
+          description: "DLQ 积压 = {{ $value }} 条,持续 15m 未降至阈值(100)以下。replay group 可能停滞或失败,死信将不断累积。"
+
+  - name: vecstream-slot
+    rules:
+      # SLO-3: replication slot 必须 active。inactive 时 PG 会无限堆 WAL 直到磁盘爆。
+      # 触发:slot active==0 持续 2m(connector 掉线高危,快速告警)。
+      - alert: SlotInactive
+        expr: |
+          max(vecstream_slot_active{job="vecstream-worker"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          slo: slot-active
+        annotations:
+          summary: "Replication slot 处于 INACTIVE(WAL 正在累积!)"
+          description: "vecstream_slot_active == 0 持续 2m。Debezium connector 可能掉线,PG WAL 将无限堆积直到磁盘耗尽,需立即恢复 connector。"
+
+      # SLO-3: slot lag < 256MB(对齐 worker 默认 SLOT_LAG_WARN_MB=256)。
+      # 触发:lag > 256MB 持续 5m(256*1024*1024 = 268435456 字节)。
+      - alert: SlotLagHigh
+        expr: |
+          max(vecstream_slot_lag_bytes{job="vecstream-worker"}) > 268435456
+        for: 5m
+        labels:
+          severity: warning
+          slo: slot-lag-256mb
+        annotations:
+          summary: "Replication slot WAL lag 过高(>256MB)"
+          description: "vecstream_slot_lag_bytes = {{ $value | humanize1024 }}B,超过阈值 256MB 持续 5m。消费滞后导致 WAL 累积,继续增长会有磁盘风险。"
+
+  - name: vecstream-availability
+    rules:
+      # SLO-4: worker 可用性。抓取失败即 worker 进程不可达。
+      # 触发:up==0 持续 1m。
+      - alert: WorkerDown
+        expr: |
+          up{job="vecstream-worker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: worker-availability
+        annotations:
+          summary: "vecstream worker 掉线(无法抓取 /metrics)"
+          description: "up{job=\"vecstream-worker\"} == 0 持续 1m。worker 进程停止或 :9100/metrics 不可达,CDC→向量同步已中断。"

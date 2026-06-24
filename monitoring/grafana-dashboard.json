@@ -1,0 +1,126 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "title": "vecstream — CDC 同步监控",
+  "uid": "vecstream-sync",
+  "tags": ["vecstream"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "同步延迟分位 (p50 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(vecstream_sync_delay_seconds_bucket{job=\"vecstream-worker\"}[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(vecstream_sync_delay_seconds_bucket{job=\"vecstream-worker\"}[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "事件处理速率 (按 table/action)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(vecstream_events_total{job=\"vecstream-worker\"}[5m])) by (table, action)",
+          "legendFormat": "{{table}}/{{action}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "DLQ 投递速率 & 积压",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(vecstream_dlq_sent_total{job=\"vecstream-worker\"}[5m]))",
+          "legendFormat": "DLQ 投递速率 (msg/s)"
+        },
+        {
+          "expr": "max(vecstream_dlq_backlog{job=\"vecstream-worker\"})",
+          "legendFormat": "DLQ 积压 (条)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Replication slot lag",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "max(vecstream_slot_lag_bytes{job=\"vecstream-worker\"})",
+          "legendFormat": "slot lag"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Slot active (1=活跃 / 0=掉线)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "green", "value": 1 }
+          ] }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "max(vecstream_slot_active{job=\"vecstream-worker\"})", "legendFormat": "slot active" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Worker 存活 (up)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "green", "value": 1 }
+          ] }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "up{job=\"vecstream-worker\"}", "legendFormat": "up" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "嵌入 chunk 速率 (贵调用)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(vecstream_chunks_embedded_total{job=\"vecstream-worker\"}[5m]))",
+          "legendFormat": "chunks/s"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{"query": "pgvector 是什么", "tenant_id": "default", "expected_pks": [{"source_table": "article", "source_pk": "1"}]}
+{"query": "PostgreSQL 的向量检索扩展", "tenant_id": "default", "expected_pks": [{"source_table": "article", "source_pk": "1"}]}
+{"query": "HNSW 和 IVFFlat 索引", "tenant_id": "default", "expected_pks": [{"source_table": "article", "source_pk": "1"}]}
+{"query": "Debezium 是什么", "tenant_id": "default", "expected_pks": [{"source_table": "article", "source_pk": "2"}]}
+{"query": "CDC 怎么捕获数据库变更", "tenant_id": "default", "expected_pks": [{"source_table": "article", "source_pk": "2"}]}
+{"query": "基于 WAL 日志的变更数据捕获并发往 Kafka", "tenant_id": "default", "expected_pks": [{"source_table": "article", "source_pk": "2"}]}
+{"query": "向量检索和 CDC 这两个主题", "tenant_id": "default", "expected_pks": [{"source_table": "article", "source_pk": "1"}, {"source_table": "article", "source_pk": "2"}]}

@@ -13,12 +13,24 @@ import argparse
 import logging
 import sys
 
+import psycopg
 from confluent_kafka import Consumer, Producer, TopicPartition
 
 from .config import Config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("dlq-replay")
+
+
+def _archive(dsn: str, msg, source_topic: str | None, replay_count: int, error: str) -> None:
+    """重投超限的死信落档 PG(M2:不无限重投,留待人工排查/选择性重放)。"""
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO dead_letter_archive "
+            "(source_topic, dlq_partition, dlq_offset, replay_count, error, payload) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (source_topic, msg.partition(), msg.offset(), replay_count, error[:2000], msg.value()),
+        )
 
 
 def replay(cfg: Config, limit: int | None, dry_run: bool) -> int:
@@ -65,18 +77,39 @@ def replay(cfg: Config, limit: int | None, dry_run: bool) -> int:
             headers = dict(msg.headers() or [])
             source_topic = (headers.get("source_topic") or b"").decode() or None
             error = (headers.get("error") or b"").decode()
+            replay_count = int((headers.get("replay_count") or b"0").decode() or "0")
             if source_topic is None:
                 log.warning("skip message without source_topic header @ offset %s", msg.offset())
                 consumer.commit(msg)
                 continue
+            # 重投次数上限:超限不再回投源 topic,落档 dead_letter_archive 待人工排查
+            if replay_count >= cfg.dlq_max_replays:
+                if dry_run:
+                    log.info("[dry-run] would ARCHIVE (replay_count=%d ≥ %d) error=%s",
+                             replay_count, cfg.dlq_max_replays, error)
+                else:
+                    _archive(cfg.pg_dsn, msg, source_topic, replay_count, error)
+                    consumer.commit(msg)
+                    log.warning("archived offset=%s (重投 %d 次仍失败) error=%s",
+                                msg.offset(), replay_count, error)
+                replayed += 1
+                if msg.offset() + 1 >= high_watermarks[msg.partition()]:
+                    pending.discard(msg.partition())
+                continue
             if dry_run:
-                log.info("[dry-run] would replay → %s (error was: %s) value=%.80s",
-                         source_topic, error, msg.value())
+                log.info("[dry-run] would replay(#%d) → %s (error was: %s) value=%.80s",
+                         replay_count + 1, source_topic, error, msg.value())
             else:
-                producer.produce(source_topic, key=msg.key(), value=msg.value())
+                # 带递增的 replay_count:消息再次进 DLQ 时计数累加,最终触发归档
+                new_headers = [(k, v) for k, v in (msg.headers() or [])
+                               if k != "replay_count"]
+                new_headers.append(("replay_count", str(replay_count + 1).encode()))
+                producer.produce(source_topic, key=msg.key(), value=msg.value(),
+                                 headers=new_headers)
                 producer.flush(10)
                 consumer.commit(msg)
-                log.info("replayed offset=%s → %s (error was: %s)", msg.offset(), source_topic, error)
+                log.info("replayed(#%d) offset=%s → %s (error was: %s)",
+                         replay_count + 1, msg.offset(), source_topic, error)
             replayed += 1
             if msg.offset() + 1 >= high_watermarks[msg.partition()]:
                 pending.discard(msg.partition())

@@ -32,13 +32,16 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "doc_vectors")
 # bge 系列约定:检索 query 加指令前缀(passage 不加)
 QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章:"
+# M2:embedding 拆服务。非空则 query 向量化走 embed-service,本进程不再加载 embedding 模型
+EMBED_SERVICE_URL = os.getenv("EMBED_SERVICE_URL", "")
 
 state: dict = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    state["model"] = SentenceTransformer(EMBED_MODEL)
+    # 用 embed-service 时不在本进程加载 embedding 模型(模型与检索解耦,省内存)
+    state["model"] = None if EMBED_SERVICE_URL else SentenceTransformer(EMBED_MODEL)
     state["reranker"] = Reranker(RERANK_MODEL) if RERANK_ENABLED else None
     if VECTOR_BACKEND == "qdrant":
         from qdrant_client import QdrantClient
@@ -129,9 +132,25 @@ class AskResponse(BaseModel):
     usage: dict
 
 
+def embed_query(query: str) -> list[float]:
+    """query 向量化:EMBED_SERVICE_URL 非空走 embed-service(它统一加 bge query 前缀,
+    本侧不再拼 QUERY_PREFIX),否则进程内模型 + 本侧前缀。两路 normalize,向量可互换。"""
+    if EMBED_SERVICE_URL:
+        import httpx
+
+        resp = httpx.post(
+            EMBED_SERVICE_URL.rstrip("/") + "/embed",
+            json={"texts": [query], "kind": "query"},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        return resp.json()["embeddings"][0]
+    return state["model"].encode(QUERY_PREFIX + query, normalize_embeddings=True).tolist()
+
+
 def retrieve(query: str, tenant_id: str, top_k: int, status: str | None) -> list[dict]:
     """向量召回,多租过滤必须带 tenant_id(DESIGN.md §3.5)。"""
-    qvec = state["model"].encode(QUERY_PREFIX + query, normalize_embeddings=True).tolist()
+    qvec = embed_query(query)
     if VECTOR_BACKEND == "qdrant":
         return _retrieve_qdrant(qvec, tenant_id, top_k, status)
     return _retrieve_pgvector(qvec, tenant_id, top_k, status)

@@ -55,6 +55,18 @@ CREATE TABLE IF NOT EXISTS processed_offsets (
     PRIMARY KEY (topic, partition)
 );
 
+-- ── 2b) 死信归档:DLQ 消息重投超过上限(DLQ_MAX_REPLAYS)后落档,不再无限重投(M2 领域四)──
+CREATE TABLE IF NOT EXISTS dead_letter_archive (
+    id            BIGSERIAL PRIMARY KEY,
+    source_topic  TEXT,
+    dlq_partition INT,
+    dlq_offset    BIGINT,
+    replay_count  INT,
+    error         TEXT,
+    payload       BYTEA,
+    archived_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ── 3) doc_vectors 行级安全:按 app.tenant 强制隔离 ──
 ALTER TABLE doc_vectors ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doc_vectors;
@@ -70,8 +82,10 @@ GRANT SELECT ON article, product, comment TO vs_debezium, vs_worker;
 -- 向量表:worker 全 DML;rag 只读(受 RLS)
 GRANT SELECT, INSERT, UPDATE, DELETE ON doc_vectors TO vs_worker;
 GRANT SELECT ON doc_vectors TO vs_rag;
--- 处理账本:仅 worker
+-- 处理账本 + 死信归档:仅 worker
 GRANT SELECT, INSERT, UPDATE, DELETE ON processed_offsets TO vs_worker;
+GRANT SELECT, INSERT ON dead_letter_archive TO vs_worker;
+GRANT USAGE ON SEQUENCE dead_letter_archive_id_seq TO vs_worker;
 
 -- ── 5) CDC 发布:预建 publication(connector 设 publication.autocreate.mode=disabled),
 --      这样 vs_debezium 无需 CREATE 权限/超级账号即可复制 ──

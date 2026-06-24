@@ -40,6 +40,12 @@ class Config:
     )
     embed_model: str = os.getenv("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
     embed_dim: int = int(os.getenv("EMBED_DIM", "512"))
+    # M2:embedding 拆服务。非空则 worker 走 HTTP 调 embed-service,否则进程内加载模型
+    embed_service_url: str = os.getenv("EMBED_SERVICE_URL", "")
+    embed_service_timeout_s: float = float(os.getenv("EMBED_SERVICE_TIMEOUT_S", "30"))
+    embed_service_max_batch: int = int(os.getenv("EMBED_SERVICE_MAX_BATCH", "64"))
+    # M2:启动时校验配置字段确实存在于源表(改列/删列快速失败,不静默用错数据)
+    schema_check: bool = os.getenv("SCHEMA_CHECK", "true").lower() == "true"
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "400"))
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "50"))
     # 单文档字符上限(防超大文本拖垮单条处理)
@@ -49,6 +55,8 @@ class Config:
     dlq_topic: str = os.getenv("DLQ_TOPIC", "cdc.dlq")
     max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
     retry_backoff_s: float = float(os.getenv("RETRY_BACKOFF_S", "1.0"))
+    # M2 DLQ 工具链:重投次数上限,超限归档到 dead_letter_archive(PG)而非无限重投
+    dlq_max_replays: int = int(os.getenv("DLQ_MAX_REPLAYS", "5"))
     # 向量库后端:pgvector(默认)| qdrant
     vector_backend: str = os.getenv("VECTOR_BACKEND", "pgvector")
     qdrant_url: str = os.getenv("QDRANT_URL", "http://localhost:6333")
