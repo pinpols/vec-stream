@@ -1,4 +1,4 @@
-from vecstream_worker.ids import text_hash, vector_id
+from vec_stream_worker.ids import text_hash, vector_id
 
 
 def test_vector_id_deterministic():
@@ -24,7 +24,7 @@ def test_text_hash_changes_with_content():
 def test_qdrant_point_id_deterministic_and_uuid():
     import uuid
 
-    from vecstream_worker.ids import qdrant_point_id
+    from vec_stream_worker.ids import qdrant_point_id
 
     a = qdrant_point_id("t1", "article", "42", 0)
     assert a == qdrant_point_id("t1", "article", "42", 0)

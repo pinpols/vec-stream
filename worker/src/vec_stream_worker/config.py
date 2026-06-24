@@ -30,13 +30,13 @@ class Config:
     kafka_bootstrap: str = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
     # 正则订阅:新表只要进了 Debezium 的 table.include.list 并配好 tables,无需改订阅
     kafka_topic_pattern: str = os.getenv("KAFKA_TOPIC_PATTERN", r"^cdc\.public\..*")
-    kafka_group_id: str = os.getenv("KAFKA_GROUP_ID", "vecstream-worker")
+    kafka_group_id: str = os.getenv("KAFKA_GROUP_ID", "vec-stream-worker")
     # worker 用最小权限角色 vs_worker(doc_vectors/processed_offsets DML),
     # 不再默认超级账号:优先 WORKER_PG_DSN,回退共享 PG_DSN,再回退本地 vs_worker 默认
     pg_dsn: str = (
         os.getenv("WORKER_PG_DSN")
         or os.getenv("PG_DSN")
-        or "postgresql://vs_worker:vs_worker@localhost:5433/vecstream"
+        or "postgresql://vs_worker:vs_worker@localhost:5433/vec_stream"
     )
     embed_model: str = os.getenv("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
     embed_dim: int = int(os.getenv("EMBED_DIM", "512"))
@@ -63,7 +63,7 @@ class Config:
     qdrant_collection: str = os.getenv("QDRANT_COLLECTION", "doc_vectors")
     # replication slot lag 监控(slot 不消费会撑爆 PG 磁盘,DESIGN.md §5)
     metrics_port: int = int(os.getenv("METRICS_PORT", "9100"))
-    slot_name: str = os.getenv("SLOT_NAME", "vecstream_slot")
+    slot_name: str = os.getenv("SLOT_NAME", "vec_stream_slot")
     slot_check_interval_s: int = int(os.getenv("SLOT_CHECK_INTERVAL_S", "60"))
     slot_lag_warn_mb: int = int(os.getenv("SLOT_LAG_WARN_MB", "256"))
 

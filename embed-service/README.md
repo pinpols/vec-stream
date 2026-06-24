@@ -27,10 +27,10 @@ Docker:
 
 ```bash
 cd embed-service
-docker build -t vecstream-embed-service .
+docker build -t vec-stream-embed-service .
 docker run -p 8200:8200 \
   -v $HOME/.cache/huggingface:/models/hf \   # 预热模型缓存,避免冷启动下载
-  vecstream-embed-service
+  vec-stream-embed-service
 ```
 
 ## 配置(环境变量)

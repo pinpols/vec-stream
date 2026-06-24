@@ -1,5 +1,5 @@
 {
-  "name": "vecstream-pg",
+  "name": "vec-stream-pg",
   "config": {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "tasks.max": "1",
@@ -8,12 +8,12 @@
     "database.port": "5432",
     "database.user": "vs_debezium",
     "database.password": "__DEBEZIUM_PASSWORD__",
-    "database.dbname": "vecstream",
+    "database.dbname": "vec_stream",
 
     "topic.prefix": "cdc",
     "plugin.name": "pgoutput",
-    "slot.name": "vecstream_slot",
-    "publication.name": "vecstream_pub",
+    "slot.name": "vec_stream_slot",
+    "publication.name": "vec_stream_pub",
     "publication.autocreate.mode": "disabled",
 
     "table.include.list": "public.article,public.product,public.comment",

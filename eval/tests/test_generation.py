@@ -1,5 +1,5 @@
 """生成质量指标纯函数单测:引用覆盖率 / 带引用句子比 / 引用解析。"""
-from vecstream_eval.generation import (
+from vec_stream_eval.generation import (
     evaluate_generation,
     extract_citations,
     lightweight_metrics,

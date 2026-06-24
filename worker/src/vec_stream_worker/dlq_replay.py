@@ -5,9 +5,9 @@
 否则重投失败的消息回流 DLQ 又被本进程捡起,形成无限乒乓循环。
 
 用法:
-    uv run python -m vecstream_worker.dlq_replay            # 重投全部存量
-    uv run python -m vecstream_worker.dlq_replay --dry-run  # 只看不投
-    uv run python -m vecstream_worker.dlq_replay --limit 10
+    uv run python -m vec_stream_worker.dlq_replay            # 重投全部存量
+    uv run python -m vec_stream_worker.dlq_replay --dry-run  # 只看不投
+    uv run python -m vec_stream_worker.dlq_replay --limit 10
 """
 import argparse
 import logging

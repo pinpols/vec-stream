@@ -31,8 +31,8 @@ curl -fsS -X POST "$CONNECT_URL/connectors" \
   -H 'Content-Type: application/json' \
   -d "$payload" | python3 -m json.tool || {
     echo "若已存在,用 PUT 更新配置:"
-    echo "  curl -X PUT $CONNECT_URL/connectors/vecstream-pg/config -H 'Content-Type: application/json' -d '<config 部分>'"
+    echo "  curl -X PUT $CONNECT_URL/connectors/vec-stream-pg/config -H 'Content-Type: application/json' -d '<config 部分>'"
     exit 1
   }
 echo
-echo "状态:curl $CONNECT_URL/connectors/vecstream-pg/status"
+echo "状态:curl $CONNECT_URL/connectors/vec-stream-pg/status"

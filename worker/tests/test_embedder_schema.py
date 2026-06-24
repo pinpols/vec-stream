@@ -1,8 +1,8 @@
 """make_embedder 工厂选择 + schema_check 校验(M2)。"""
 import pytest
 
-from vecstream_worker.embedder import HttpEmbedder, LocalEmbedder, make_embedder
-from vecstream_worker.schema_check import check_schema
+from vec_stream_worker.embedder import HttpEmbedder, LocalEmbedder, make_embedder
+from vec_stream_worker.schema_check import check_schema
 
 
 class FakeCfg:
@@ -22,7 +22,7 @@ def test_make_embedder_http_when_url_set(monkeypatch):
 
 def test_make_embedder_local_when_url_empty(monkeypatch):
     # LocalEmbedder 会加载 SentenceTransformer,patch 掉避免真下载模型
-    import vecstream_worker.embedder as mod
+    import vec_stream_worker.embedder as mod
 
     monkeypatch.setattr(mod.LocalEmbedder, "__init__", lambda self, name: None)
     cfg = FakeCfg()
@@ -92,7 +92,7 @@ class FakeConn:
 
 
 def _patch_connect(monkeypatch, cols):
-    import vecstream_worker.schema_check as mod
+    import vec_stream_worker.schema_check as mod
 
     monkeypatch.setattr(mod.psycopg, "connect", lambda dsn: FakeConn(cols))
 

@@ -1,4 +1,4 @@
-# vecstream
+# vec_stream
 
 把业务数据库的变更(CDC)**实时**同步进向量数据库,作为 RAG / 语义检索的实时数据底座。
 
@@ -29,13 +29,13 @@ docker compose up -d
 ./debezium/register.sh
 
 # 查看 connector 状态
-curl http://localhost:8083/connectors/vecstream-pg/status
+curl http://localhost:8083/connectors/vec-stream-pg/status
 ```
 
 ## 目录结构
 
 ```
-vecstream/
+vec_stream/
 ├── docs/DESIGN.md          # 设计文档
 ├── docker-compose.yml      # 基础设施:Postgres / Kafka / Kafka Connect(Debezium)
 ├── db/init/                # Postgres 初始化(逻辑复制 + pgvector + 示例表)
@@ -50,10 +50,10 @@ Embedding 用本地 **BAAI/bge-small-zh-v1.5**(512 维,免 key,首次运行自�
 
 ```bash
 # Vector Sync Worker:消费 CDC → embedding → 写 pgvector
-cd worker && uv sync && uv run python -m vecstream_worker.main
+cd worker && uv sync && uv run python -m vec_stream_worker.main
 
 # RAG 服务(另一个终端)
-cd rag && uv sync && uv run uvicorn vecstream_rag.app:app --port 8000
+cd rag && uv sync && uv run uvicorn vec_stream_rag.app:app --port 8000
 
 # 语义搜索验证
 curl -s -X POST http://localhost:8000/search \
@@ -62,7 +62,7 @@ curl -s -X POST http://localhost:8000/search \
 ```
 
 > 启动注意(资源紧张的机器):`docker compose up -d` 后若 Connect 起不来,
-> 按「先等 Kafka healthy → 再单独 `docker start vecstream-connect`」串行启动。
+> 按「先等 Kafka healthy → 再单独 `docker start vec-stream-connect`」串行启动。
 
 ## 运维
 
@@ -71,7 +71,7 @@ curl -s -X POST http://localhost:8000/search \
 - **slot lag 监控**:worker 内置后台线程,每 60s 查 `pg_replication_slots`,
   lag 超 `SLOT_LAG_WARN_MB`(默认 256MB)或 slot 失活时打 WARNING——
   slot 不消费会撑爆 PG 磁盘,这条日志要接告警。
-- **DLQ 重投**:`uv run python -m vecstream_worker.dlq_replay [--dry-run|--limit N]`;
+- **DLQ 重投**:`uv run python -m vec_stream_worker.dlq_replay [--dry-run|--limit N]`;
   只处理启动时水位线之前的消息(防止重投失败回流后被同一进程再次捡起死循环)。
 - **错误分类**:基础设施瞬时故障(PG/Qdrant 连不上)无限退避重试、阻塞分区、不进 DLQ;
   数据性错误(解析失败等)重试 3 次进 DLQ。upsert 一律按**源库当前态**重建文档
@@ -82,14 +82,14 @@ curl -s -X POST http://localhost:8000/search \
   `reembed_parent: {table, fk}` —— 子表任何变更(含删除)触发父行重新 embed,
   评论等关联内容随主文档可搜。见 `worker/config.py` 的 article/comment 示例。
 - **监控指标**:worker 在 `:9100/metrics`(qdrant worker `:9101`)暴露 Prometheus 指标:
-  `vecstream_events_total{table,action}` / `vecstream_chunks_embedded_total`(成本)/
-  `vecstream_sync_delay_seconds`(CDC→向量延迟)/ `vecstream_dlq_sent_total` /
-  `vecstream_dlq_backlog` / `vecstream_slot_lag_bytes` / `vecstream_slot_active`;
+  `vec_stream_events_total{table,action}` / `vec_stream_chunks_embedded_total`(成本)/
+  `vec_stream_sync_delay_seconds`(CDC→向量延迟)/ `vec_stream_dlq_sent_total` /
+  `vec_stream_dlq_backlog` / `vec_stream_slot_lag_bytes` / `vec_stream_slot_active`;
   rag 提供 `GET /stats`(向量总量、按表分布)。
 - **已知边界**:上游 DDL 变更未做兼容(约定不做破坏性 DDL);换 embedding 模型 = 全量重建。
 - **向量库后端**:`VECTOR_BACKEND=pgvector|qdrant`(worker 与 rag 都认)。切 Qdrant:
   `docker compose up -d qdrant`,worker 用**新 consumer group** 从 Kafka 重放即全量回填
-  (`VECTOR_BACKEND=qdrant KAFKA_GROUP_ID=vecstream-worker-qdrant`);超出 Kafka retention
+  (`VECTOR_BACKEND=qdrant KAFKA_GROUP_ID=vec-stream-worker-qdrant`);超出 Kafka retention
   的历史要走 Debezium re-snapshot。双 worker 双 group 可让两个库并行保持同步。
 
 ## 路线图

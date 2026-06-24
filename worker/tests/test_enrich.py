@@ -1,9 +1,9 @@
 """跨表反查 + 子表触发父文档重建 + 「以源库当前态为准」语义的测试。"""
 import pytest
 
-from vecstream_worker.config import Config
-from vecstream_worker.ids import text_hash
-from vecstream_worker.main import process_event
+from vec_stream_worker.config import Config
+from vec_stream_worker.ids import text_hash
+from vec_stream_worker.main import process_event
 
 from .test_process_event import FakeEmbedder, FakeSink, ev
 

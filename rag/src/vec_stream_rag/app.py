@@ -21,7 +21,7 @@ log = logging.getLogger("rag")
 # 默认连 vs_rag,查询前必须 SET app.tenant 否则 RLS 命中 0 行。
 PG_DSN = os.getenv(
     "RAG_PG_DSN",
-    os.getenv("PG_DSN", "postgresql://vs_rag:vs_rag@localhost:5433/vecstream"),
+    os.getenv("PG_DSN", "postgresql://vs_rag:vs_rag@localhost:5433/vec_stream"),
 )
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
         state["pool"].close()
 
 
-app = FastAPI(title="vecstream-rag", lifespan=lifespan)
+app = FastAPI(title="vec-stream-rag", lifespan=lifespan)
 
 
 def _load_api_keys() -> dict[str, str]:

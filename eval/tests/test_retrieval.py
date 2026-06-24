@@ -1,6 +1,6 @@
 """检索指标纯函数单测:用构造的召回结果验证 recall@k / MRR 算法正确。"""
-from vecstream_eval.golden import GoldenQuery
-from vecstream_eval.retrieval import (
+from vec_stream_eval.golden import GoldenQuery
+from vec_stream_eval.retrieval import (
     evaluate_retrieval,
     recall_at_k,
     reciprocal_rank,

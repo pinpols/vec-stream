@@ -1,5 +1,5 @@
 [project]
-name = "vecstream-embed-service"
+name = "vec-stream-embed-service"
 version = "0.1.0"
 description = "Standalone embedding inference service (bge-small-zh): HTTP /embed with dynamic micro-batching, used by worker/rag instead of in-process models"
 requires-python = ">=3.12"

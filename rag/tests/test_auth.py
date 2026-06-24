@@ -10,7 +10,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from vecstream_rag import app as appmod
+from vec_stream_rag import app as appmod
 
 API_KEYS = {"key-acme": "acme", "key-globex": "globex"}
 

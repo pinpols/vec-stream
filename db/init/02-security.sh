@@ -5,7 +5,7 @@
 # 由 Postgres 官方镜像的 docker-entrypoint 在 01-init.sql 之后自动执行
 # (仅 fresh volume 首次初始化时跑)。对**已有库**手动应用:
 #   docker exec -e DEBEZIUM_PASSWORD=... -e WORKER_PASSWORD=... -e RAG_PASSWORD=... \
-#     vecstream-postgres bash /docker-entrypoint-initdb.d/02-security.sh
+#     vec-stream-postgres bash /docker-entrypoint-initdb.d/02-security.sh
 # 全部幂等(角色 IF NOT EXISTS / 表 IF NOT EXISTS / 策略 DROP+CREATE),可重复跑。
 #
 # 设计要点(对应 ENTERPRISE.md 领域一/三 的 M1 项):
@@ -22,7 +22,7 @@ set -euo pipefail
 : "${WORKER_PASSWORD:?need WORKER_PASSWORD}"
 : "${RAG_PASSWORD:?need RAG_PASSWORD}"
 
-psql -v ON_ERROR_STOP=1 --username "${POSTGRES_USER:-vecstream}" --dbname "${POSTGRES_DB:-vecstream}" \
+psql -v ON_ERROR_STOP=1 --username "${POSTGRES_USER:-vec_stream}" --dbname "${POSTGRES_DB:-vec_stream}" \
   -v debezium_pw="$DEBEZIUM_PASSWORD" \
   -v worker_pw="$WORKER_PASSWORD" \
   -v rag_pw="$RAG_PASSWORD" <<'EOSQL'
@@ -91,12 +91,12 @@ GRANT USAGE ON SEQUENCE dead_letter_archive_id_seq TO vs_worker;
 --      这样 vs_debezium 无需 CREATE 权限/超级账号即可复制 ──
 DO $do$
 BEGIN
-  IF NOT EXISTS (SELECT FROM pg_publication WHERE pubname = 'vecstream_pub') THEN
-    CREATE PUBLICATION vecstream_pub FOR TABLE article, product, comment;
+  IF NOT EXISTS (SELECT FROM pg_publication WHERE pubname = 'vec_stream_pub') THEN
+    CREATE PUBLICATION vec_stream_pub FOR TABLE article, product, comment;
   END IF;
 END
 $do$;
-ALTER PUBLICATION vecstream_pub OWNER TO vs_debezium;
+ALTER PUBLICATION vec_stream_pub OWNER TO vs_debezium;
 EOSQL
 
 echo "[02-security] 角色 / RLS / 处理账本 / publication 就绪。"

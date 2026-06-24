@@ -1615,7 +1615,7 @@ wheels = [
 ]
 
 [[package]]
-name = "vecstream-rag"
+name = "vec-stream-rag"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

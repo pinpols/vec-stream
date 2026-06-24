@@ -1,6 +1,6 @@
 apiVersion: 1
 providers:
-  - name: vecstream
+  - name: vec_stream
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30

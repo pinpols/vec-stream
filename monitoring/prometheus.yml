@@ -6,21 +6,21 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    monitor: vecstream
+    monitor: vec_stream
 
 # 加载告警规则
 rule_files:
   - /etc/prometheus/alerts.yml
 
 scrape_configs:
-  # vecstream worker(宿主机进程):CDC 同步延迟 / DLQ / chunks / slot lag 指标
-  - job_name: vecstream-worker
+  # vec_stream worker(宿主机进程):CDC 同步延迟 / DLQ / chunks / slot lag 指标
+  - job_name: vec-stream-worker
     metrics_path: /metrics
     static_configs:
       - targets:
           - host.docker.internal:9100
         labels:
-          service: vecstream-worker
+          service: vec-stream-worker
 
   # Prometheus 自监控
   - job_name: prometheus

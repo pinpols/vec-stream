@@ -1,7 +1,7 @@
 [project]
-name = "vecstream-eval"
+name = "vec-stream-eval"
 version = "0.1.0"
-description = "Evaluation harness for vecstream RAG: retrieval quality (recall@k/MRR), generation quality (faithfulness/citation coverage), and PG vs source consistency reconciliation."
+description = "Evaluation harness for vec_stream RAG: retrieval quality (recall@k/MRR), generation quality (faithfulness/citation coverage), and PG vs source consistency reconciliation."
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.27",
@@ -18,11 +18,11 @@ ragas = ["ragas>=0.1", "datasets>=2.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-vecstream-eval = "vecstream_eval.cli:main"
+vec-stream-eval = "vec_stream_eval.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vecstream_eval"]
+packages = ["src/vec_stream_eval"]

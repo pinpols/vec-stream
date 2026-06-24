@@ -1,4 +1,4 @@
-"""命令行入口:python -m vecstream_eval retrieval|generation|reconcile。"""
+"""命令行入口:python -m vec_stream_eval retrieval|generation|reconcile。"""
 from __future__ import annotations
 
 import argparse
@@ -9,8 +9,8 @@ from . import generation, reconcile, retrieval
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="vecstream-eval",
-        description="vecstream RAG 评估:检索质量 / 生成质量 / 一致性对账",
+        prog="vec-stream-eval",
+        description="vec_stream RAG 评估:检索质量 / 生成质量 / 一致性对账",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

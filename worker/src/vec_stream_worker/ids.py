@@ -2,7 +2,7 @@
 import hashlib
 import uuid
 
-# vecstream 自己的 UUID 命名空间(随机生成一次后固定,不可变更否则 ID 全变)
+# vec_stream 自己的 UUID 命名空间(随机生成一次后固定,不可变更否则 ID 全变)
 _NAMESPACE = uuid.UUID("e7b2c4a0-5d1f-4c8e-9a3b-6f2d8e1c4b7a")
 
 

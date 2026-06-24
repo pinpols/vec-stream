@@ -7,10 +7,10 @@ psycopg 只连真 PG,故用 mock cursor 断言"账本 SQL 被执行 + 单调条�
 不起真实 DB(参考 test_process_event.py 的 mock 风格)。"""
 from unittest.mock import MagicMock
 
-from vecstream_worker.config import Config
-from vecstream_worker.ids import text_hash
-from vecstream_worker.main import process_event
-from vecstream_worker.sink import VectorSink
+from vec_stream_worker.config import Config
+from vec_stream_worker.ids import text_hash
+from vec_stream_worker.main import process_event
+from vec_stream_worker.sink import VectorSink
 
 
 class FakeEmbedder:

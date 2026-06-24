@@ -1,10 +1,10 @@
-# vecstream 基础设施:Postgres(逻辑复制 + pgvector) + Kafka + Kafka Connect(Debezium)
+# vec_stream 基础设施:Postgres(逻辑复制 + pgvector) + Kafka + Kafka Connect(Debezium)
 # 阶段 0 用:跑通 CDC → Kafka 链路。Sync Worker / RAG 服务后续以独立服务接入。
 services:
   postgres:
     # pgvector 官方镜像自带 pgvector 扩展;同库既做业务源库,也做向量库(MVP 简化)
     image: pgvector/pgvector:pg16
-    container_name: vecstream-postgres
+    container_name: vec-stream-postgres
     command:
       - postgres
       - -c
@@ -16,7 +16,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB:-vecstream}
+      POSTGRES_DB: ${POSTGRES_DB:-vec_stream}
       POSTGRES_INITDB_ARGS: -c shared_preload_libraries=pgcrypto
       # 密钥供初始化脚本生成用户密码
       DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD}
@@ -37,7 +37,7 @@ services:
   kafka:
     # KRaft 模式单节点,免 Zookeeper
     image: confluentinc/cp-kafka:7.6.1
-    container_name: vecstream-kafka
+    container_name: vec-stream-kafka
     ports:
       - "9092:9092"
     environment:
@@ -55,7 +55,7 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       # REPLICA IDENTITY FULL 下大字段事件(含 before 镜像)易撞默认 1MB 上限
       KAFKA_MESSAGE_MAX_BYTES: 5242880
-      CLUSTER_ID: vecstream-cluster-0001
+      CLUSTER_ID: vec-stream-cluster-0001
     volumes:
       # 无卷则容器重建即丢 topic/offset/connector 配置(connector 配置存于 Kafka 内部 topic)
       - kafkadata:/var/lib/kafka/data
@@ -68,7 +68,7 @@ services:
   connect:
     # Debezium Kafka Connect:内置 Postgres connector
     image: debezium/connect:2.7.3.Final
-    container_name: vecstream-connect
+    container_name: vec-stream-connect
     depends_on:
       kafka:
         condition: service_healthy
@@ -78,7 +78,7 @@ services:
       - "8083:8083"
     environment:
       BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
-      GROUP_ID: vecstream-connect
+      GROUP_ID: vec-stream-connect
       CONFIG_STORAGE_TOPIC: _connect_configs
       OFFSET_STORAGE_TOPIC: _connect_offsets
       STATUS_STORAGE_TOPIC: _connect_status
@@ -94,7 +94,7 @@ services:
   qdrant:
     # 阶段 3:专用向量库(与 pgvector 可切换,VECTOR_BACKEND=qdrant)
     image: qdrant/qdrant:v1.12.4
-    container_name: vecstream-qdrant
+    container_name: vec-stream-qdrant
     ports:
       - "6333:6333"
     volumes:

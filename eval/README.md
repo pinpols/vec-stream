@@ -1,4 +1,4 @@
-# vecstream-eval — RAG 评估模块
+# vec-stream-eval — RAG 评估模块
 
 项目收尾高地(ENTERPRISE.md M2 领域五 item 6)。给 RAG 链路提供**客观、可重复**的跑分,
 支撑「换 chunk 策略 / 换 embedding 模型 / 换 rerank 前后对比」与「上线后漂移监控」。
@@ -30,14 +30,14 @@ pip install -e '.[ragas]'   # 可选:生成质量用 RAGAS 重依赖(不装走�
 
 ```bash
 # 检索质量:recall@5 + MRR,golden set 默认读 eval/golden/queries.jsonl
-python -m vecstream_eval retrieval -k 5 --json-out retrieval.json
-python -m vecstream_eval retrieval -k 10 --rerank      # 开 rerank 对比
+python -m vec_stream_eval retrieval -k 5 --json-out retrieval.json
+python -m vec_stream_eval retrieval -k 10 --rerank      # 开 rerank 对比
 
 # 生成质量:引用覆盖率 / 带引用句子比
-python -m vecstream_eval generation --json-out gen.json
+python -m vec_stream_eval generation --json-out gen.json
 
 # 一致性对账:漏处理(missing)/ 残留(orphan)
-python -m vecstream_eval reconcile --dsn "$RAG_PG_DSN" --json-out drift.json
+python -m vec_stream_eval reconcile --dsn "$RAG_PG_DSN" --json-out drift.json
 ```
 
 ## 指标含义

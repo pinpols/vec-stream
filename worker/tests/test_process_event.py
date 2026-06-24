@@ -1,7 +1,7 @@
 """process_event 分流逻辑测试:c/r/u/d、hash 去重 + metadata 刷新、多表路由。"""
-from vecstream_worker.config import Config
-from vecstream_worker.ids import text_hash
-from vecstream_worker.main import process_event, table_from_topic
+from vec_stream_worker.config import Config
+from vec_stream_worker.ids import text_hash
+from vec_stream_worker.main import process_event, table_from_topic
 
 
 class FakeEmbedder:

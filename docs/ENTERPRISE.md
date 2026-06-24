@@ -122,7 +122,7 @@
 
 **关键判断**:指标的"采集端"已经做完(Prometheus 格式),缺的是"消费端"。
 
-- 告警规则(✅ M2):写一组 Prometheus alert rule(`vecstream_sync_delay_seconds` p99、`vecstream_dlq_backlog`、`vecstream_slot_active==0`)。**几乎零代码**,定义 SLO 是好习惯,该做。
+- 告警规则(✅ M2):写一组 Prometheus alert rule(`vec_stream_sync_delay_seconds` p99、`vec_stream_dlq_backlog`、`vec_stream_slot_active==0`)。**几乎零代码**,定义 SLO 是好习惯,该做。
 - 选择性重放(✅ M2):基于 Debezium incremental snapshot(信号表触发按表/按条件重放)——这是**比自己写重放更该学的东西**,Debezium 原生能力,正好补"按表重建"短板。
 - DLQ 工具链增强(✅ M2):重投次数上限(消息头记 replay_count,超限进归档表)、死信归档——是已有 `dlq_replay.py` 的自然延伸,改动小。
 - Grafana / OTel / ELK(🟡):接现成系统的工程活,你主项目已有 OTel 经验,**学习边际收益低**,真上生产再接。

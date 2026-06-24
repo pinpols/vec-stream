@@ -1,4 +1,4 @@
--- vecstream Postgres 初始化
+-- vec_stream Postgres 初始化
 -- MVP 简化:同一个 PG 既当业务源库(被 CDC 监听),又当向量库(pgvector)。
 -- 生产应拆分,这里为了阶段 0 快速跑通合并。
 

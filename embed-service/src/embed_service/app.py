@@ -171,7 +171,7 @@ async def lifespan(app: FastAPI):
     state["ready"] = False
 
 
-app = FastAPI(title="vecstream-embed-service", lifespan=lifespan)
+app = FastAPI(title="vec-stream-embed-service", lifespan=lifespan)
 
 
 # ---- 请求 / 响应 schema(契约)----------------------------------------------

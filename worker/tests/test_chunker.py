@@ -1,6 +1,6 @@
 import pytest
 
-from vecstream_worker.chunker import split_text
+from vec_stream_worker.chunker import split_text
 
 
 def test_short_text_single_chunk():

@@ -1,4 +1,4 @@
-"""vecstream-eval:RAG 评估模块。
+"""vec-stream-eval:RAG 评估模块。
 
 三个子系统:
   retrieval   —— 检索质量(recall@k / MRR),换 chunk 策略/embedding 模型前后跑分对比
