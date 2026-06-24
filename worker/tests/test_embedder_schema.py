@@ -1,7 +1,15 @@
 """make_embedder 工厂选择 + schema_check 校验(M2)。"""
+import sys
+import types
+
 import pytest
 
-from vec_stream_worker.embedder import HttpEmbedder, LocalEmbedder, make_embedder
+from vec_stream_worker.embedder import (
+    HttpEmbedder,
+    LocalEmbedder,
+    OpenAIEmbedder,
+    make_embedder,
+)
 from vec_stream_worker.schema_check import check_schema
 
 
@@ -10,6 +18,56 @@ class FakeCfg:
     embed_service_url = ""
     embed_service_timeout_s = 30.0
     embed_service_max_batch = 64
+    embed_provider = "local"
+    embed_openai_base_url = ""
+
+
+def _fake_openai(monkeypatch, captured):
+    class FakeData:
+        def __init__(self, v):
+            self.embedding = v
+
+    class FakeResp:
+        def __init__(self, n):
+            self.data = [FakeData([0.1, 0.2]) for _ in range(n)]
+
+    class FakeEmbeddings:
+        def create(self, model, input):
+            captured["model"] = model
+            captured["input"] = input
+            return FakeResp(len(input))
+
+    class FakeOpenAI:
+        def __init__(self, base_url=None):
+            captured["base_url"] = base_url
+            self.embeddings = FakeEmbeddings()
+
+    mod = types.ModuleType("openai")
+    mod.OpenAI = FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", mod)
+
+
+def test_make_embedder_openai(monkeypatch):
+    captured = {}
+    _fake_openai(monkeypatch, captured)
+    cfg = FakeCfg()
+    cfg.embed_provider = "openai"
+    cfg.embed_model = "text-embedding-3-small"
+    cfg.embed_openai_base_url = "https://api.openai.com/v1"
+    e = make_embedder(cfg)
+    assert isinstance(e, OpenAIEmbedder)
+    out = e.embed_passages(["a", "b"])
+    assert out == [[0.1, 0.2], [0.1, 0.2]]
+    assert captured["model"] == "text-embedding-3-small"
+    assert captured["base_url"] == "https://api.openai.com/v1"
+
+
+def test_openai_embedder_empty(monkeypatch):
+    captured = {}
+    _fake_openai(monkeypatch, captured)
+    cfg = FakeCfg()
+    cfg.embed_provider = "openai"
+    assert make_embedder(cfg).embed_passages([]) == []
 
 
 def test_make_embedder_http_when_url_set(monkeypatch):

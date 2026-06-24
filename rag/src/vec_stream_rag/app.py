@@ -34,14 +34,19 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "doc_vectors")
 QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章:"
 # M2:embedding 拆服务。非空则 query 向量化走 embed-service,本进程不再加载 embedding 模型
 EMBED_SERVICE_URL = os.getenv("EMBED_SERVICE_URL", "")
+# embedding 后端可插拔:local(进程内)| openai(OpenAI 兼容 embeddings)。须与 worker 写入侧一致
+EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "local")
+EMBED_OPENAI_BASE_URL = os.getenv("EMBED_OPENAI_BASE_URL", "")
+# 用远程 embedding(service 或 openai)时,本进程不加载本地 embedding 模型
+_USE_LOCAL_EMBED = not EMBED_SERVICE_URL and EMBED_PROVIDER != "openai"
 
 state: dict = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 用 embed-service 时不在本进程加载 embedding 模型(模型与检索解耦,省内存)
-    state["model"] = None if EMBED_SERVICE_URL else SentenceTransformer(EMBED_MODEL)
+    # 用远程 embedding(service / openai)时不在本进程加载 embedding 模型(解耦省内存)
+    state["model"] = SentenceTransformer(EMBED_MODEL) if _USE_LOCAL_EMBED else None
     state["reranker"] = Reranker(RERANK_MODEL) if RERANK_ENABLED else None
     if VECTOR_BACKEND == "qdrant":
         from qdrant_client import QdrantClient
@@ -133,8 +138,10 @@ class AskResponse(BaseModel):
 
 
 def embed_query(query: str) -> list[float]:
-    """query 向量化:EMBED_SERVICE_URL 非空走 embed-service(它统一加 bge query 前缀,
-    本侧不再拼 QUERY_PREFIX),否则进程内模型 + 本侧前缀。两路 normalize,向量可互换。"""
+    """query 向量化,三种后端(与 worker 写入侧对齐,向量分布须一致):
+    - EMBED_SERVICE_URL 非空:走 embed-service(它统一加 bge query 前缀)。
+    - EMBED_PROVIDER=openai:OpenAI 兼容 embeddings(generic 模型不加 bge 前缀)。
+    - 否则:进程内 SentenceTransformer + bge query 前缀。"""
     if EMBED_SERVICE_URL:
         import httpx
 
@@ -145,6 +152,12 @@ def embed_query(query: str) -> list[float]:
         )
         resp.raise_for_status()
         return resp.json()["embeddings"][0]
+    if EMBED_PROVIDER == "openai":
+        from openai import OpenAI
+
+        client = OpenAI(base_url=EMBED_OPENAI_BASE_URL or None)
+        resp = client.embeddings.create(model=EMBED_MODEL, input=[query])
+        return resp.data[0].embedding
     return state["model"].encode(QUERY_PREFIX + query, normalize_embeddings=True).tolist()
 
 

@@ -44,6 +44,10 @@ class Config:
     embed_service_url: str = os.getenv("EMBED_SERVICE_URL", "")
     embed_service_timeout_s: float = float(os.getenv("EMBED_SERVICE_TIMEOUT_S", "30"))
     embed_service_max_batch: int = int(os.getenv("EMBED_SERVICE_MAX_BATCH", "64"))
+    # embedding 后端可插拔:local(进程内 SentenceTransformer)| openai(OpenAI 兼容 embeddings)
+    # ⚠️ 换 provider/模型常意味着换维度,必须与 doc_vectors.embedding 维度一致(换维走蓝绿重建)
+    embed_provider: str = os.getenv("EMBED_PROVIDER", "local")
+    embed_openai_base_url: str = os.getenv("EMBED_OPENAI_BASE_URL", "")
     # M2:启动时校验配置字段确实存在于源表(改列/删列快速失败,不静默用错数据)
     schema_check: bool = os.getenv("SCHEMA_CHECK", "true").lower() == "true"
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "400"))
