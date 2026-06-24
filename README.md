@@ -96,7 +96,7 @@ curl -s -X POST http://localhost:8000/search \
 
 - ~~**阶段 0**:Debezium 监听一张表 → Kafka → Worker 处理 INSERT → 写 pgvector → `/search` 能搜到~~ ✅ 2026-06-10
 - ~~**阶段 1**:UPDATE / DELETE、确定性 ID、hash 去重、DLQ~~ ✅ 2026-06-10(DLQ topic:`cdc.dlq`,失败消息带 error/source_offset header)
-- ~~**阶段 2**:`/ask` 接 Claude 生成 + rerank + 多租过滤~~ ✅ 2026-06-10(/ask 需在 `rag/.env` 配 `ANTHROPIC_API_KEY`;rerank 用 bge-reranker-base,`RERANK_ENABLED=false` 可关)
+- ~~**阶段 2**:`/ask` 生成 + rerank + 多租过滤~~ ✅ 2026-06-10(rerank 用 bge-reranker-base,`RERANK_ENABLED=false` 可关)。**生成层可插拔**:`LLM_PROVIDER=anthropic`(默认)或 `openai`(OpenAI 兼容协议,靠 `OPENAI_BASE_URL` 切 OpenAI/DeepSeek/通义/Ollama/vLLM),见 `.env.example`
 - ~~**阶段 3**:切 Qdrant、跨表文档、监控指标~~ ✅ 2026-06-10(全部阶段完成)
 
 详见 [`docs/DESIGN.md`](docs/DESIGN.md) §7。

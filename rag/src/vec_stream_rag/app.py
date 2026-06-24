@@ -12,7 +12,7 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
-from .llm import generate_answer
+from .llm import active_provider, api_key_env, generate_answer, llm_available
 from .rerank import Reranker
 
 log = logging.getLogger("rag")
@@ -228,7 +228,13 @@ def apply_rerank(query: str, hits: list[dict], top_n: int) -> list[dict]:
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "rerank": RERANK_ENABLED, "backend": VECTOR_BACKEND}
+    return {
+        "status": "ok",
+        "rerank": RERANK_ENABLED,
+        "backend": VECTOR_BACKEND,
+        "llm_provider": active_provider(),
+        "llm_ready": llm_available(),
+    }
 
 
 @app.get("/stats")
@@ -281,8 +287,11 @@ def search(req: SearchRequest, tenant_id: str = Depends(require_tenant)):
 
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest, tenant_id: str = Depends(require_tenant)):
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        raise HTTPException(503, "ANTHROPIC_API_KEY 未配置,/ask 不可用(/search 不受影响)")
+    if not llm_available():
+        raise HTTPException(
+            503,
+            f"{api_key_env()} 未配置(LLM_PROVIDER={active_provider()}),/ask 不可用(/search 不受影响)",
+        )
     # tenant 来自鉴权 token,忽略 req.tenant_id(不可信)。
     hits = retrieve(req.query, tenant_id, req.top_k, req.status)
     if not hits:
