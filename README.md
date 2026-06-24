@@ -35,7 +35,7 @@ curl http://localhost:8083/connectors/vec-stream-pg/status
 ## 目录结构
 
 ```
-vec_stream/
+vec-stream/
 ├── docs/DESIGN.md          # 设计文档
 ├── docker-compose.yml      # 基础设施:Postgres / Kafka / Kafka Connect(Debezium)
 ├── db/init/                # Postgres 初始化(逻辑复制 + pgvector + 示例表)
