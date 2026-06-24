@@ -69,7 +69,7 @@
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│ RAG 服务         │  检索 → (可选)rerank → Claude 生成
+│ RAG 服务         │  检索 → (可选)rerank → OpenAI 兼容 API 生成
 │  /search /ask   │
 └─────────────────┘
 ```
@@ -152,8 +152,8 @@ Sync Worker 可照搬 `batch-worker-*` 的 **CLAIM → EXECUTE → REPORT** 幂�
 
 ### 3.4 Embedding 层
 
-- **重要**:Claude **没有** embeddings 接口。Embedding 需单独选模型,Claude 只负责 RAG 最后的生成。
-- 候选:Voyage AI(Anthropic 推荐的 embedding 合作方)/ 开源 bge、e5 系列(可本地部署,省钱、练部署)。
+- **重要**:生成模型和 embedding 模型是两条链路。Embedding 需单独选模型,生成层只负责 RAG 最后的回答。
+- 候选:OpenAI 兼容 embeddings / 开源 bge、e5 系列(可本地部署,省钱、练部署)。
 - **批量调用**:Worker 攒一批 chunk 一次性请求,提升吞吐、降成本。
 - **维度固定**:选定模型后向量维度锁死,换模型 = 全量重建索引(写进运维手册)。
 
@@ -194,9 +194,9 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 接口:
 
 - `POST /search` — 纯语义搜索:query → embed → 向量召回(带 tenant 过滤)→ (可选)rerank → 返回 chunk 列表。
-- `POST /ask` — RAG 问答:上面召回结果作为上下文 → Claude(Opus 4.8 / Sonnet 4.6)生成答案,带引用来源。
+- `POST /ask` — RAG 问答:上面召回结果作为上下文 → OpenAI 兼容 API 生成答案,带引用来源。
 
-链路:`query embedding → 向量召回 topK → rerank 重排 topN → 拼 prompt → Claude 生成 → 附 source`。
+链路:`query embedding → 向量召回 topK → rerank 重排 topN → 拼 prompt → OpenAI 兼容 API 生成 → 附 source`。
 
 > rerank 是 RAG 质量提升最明显的一步(召回拿 topK=50,重排后取 topN=5 喂模型),MVP 可先不做,第二阶段加。
 
@@ -245,7 +245,7 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 | Embedding | 开源 bge/e5 本地起 或 Voyage API | 自托管 GPU 推理 |
 | 向量库 | pgvector | Qdrant |
 | RAG 服务 | Python(FastAPI) | — |
-| 生成模型 | Claude Sonnet 4.6(性价比)/ Opus 4.8(复杂) | — |
+| 生成模型 | OpenAI 兼容 API(`OPENAI_BASE_URL` 可指 agent-ctl 网关 / OpenAI / DeepSeek / 通义 / Ollama / vLLM) | — |
 | rerank | 暂无 | rerank 模型 |
 
 > **唯一待你拍板的决策**:Sync Worker + RAG 服务用 **Python** 还是 **Java**?
@@ -269,7 +269,7 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 - DLQ + 重试
 
 **阶段 2 · RAG 质量(第 3 周)**
-- `/ask` 接 Claude 生成,带引用
+- `/ask` 接 OpenAI 兼容 API 生成,带引用
 - 加 rerank
 - 多租 payload 过滤
 

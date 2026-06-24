@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS dead_letter_archive (
     archived_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ── 2c) 索引元数据:worker 写入 embedding/chunk/backend 配置,rag 启动时校验一致性 ──
+CREATE TABLE IF NOT EXISTS index_metadata (
+    name       TEXT PRIMARY KEY,
+    metadata   JSONB       NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ── 3) doc_vectors 行级安全:按 app.tenant 强制隔离 ──
 ALTER TABLE doc_vectors ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doc_vectors;
@@ -82,6 +89,9 @@ GRANT SELECT ON article, product, comment TO vs_debezium, vs_worker;
 -- 向量表:worker 全 DML;rag 只读(受 RLS)
 GRANT SELECT, INSERT, UPDATE, DELETE ON doc_vectors TO vs_worker;
 GRANT SELECT ON doc_vectors TO vs_rag;
+-- 索引元数据:worker 写,rag 读并做启动期一致性校验
+GRANT SELECT, INSERT, UPDATE ON index_metadata TO vs_worker;
+GRANT SELECT ON index_metadata TO vs_rag;
 -- 处理账本 + 死信归档:仅 worker
 GRANT SELECT, INSERT, UPDATE, DELETE ON processed_offsets TO vs_worker;
 GRANT SELECT, INSERT ON dead_letter_archive TO vs_worker;

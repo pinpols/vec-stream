@@ -1,4 +1,5 @@
 """process_event 分流逻辑测试:c/r/u/d、hash 去重 + metadata 刷新、多表路由。"""
+
 from vec_stream_worker.config import Config
 from vec_stream_worker.ids import text_hash
 from vec_stream_worker.main import process_event, table_from_topic
@@ -47,7 +48,10 @@ def test_insert_upserts():
     sink = FakeSink()
     action = process_event(
         ev("c", after={"id": 1, "tenant_id": "t1", "title": "标题", "body": "正文"}),
-        "article", CFG, FakeEmbedder(), sink,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
     )
     assert action == "upserted"
     assert sink.upserts[0]["source_pk"] == "1"
@@ -59,7 +63,10 @@ def test_product_table_uses_its_own_fields():
     sink = FakeSink()
     action = process_event(
         ev("c", after={"id": 9, "name": "商品A", "description": "描述文本"}),
-        "product", CFG, FakeEmbedder(), sink,
+        "product",
+        CFG,
+        FakeEmbedder(),
+        sink,
     )
     assert action == "upserted"
     assert sink.upserts[0]["source_table"] == "product"
@@ -70,7 +77,10 @@ def test_unconfigured_table_ignored():
     sink = FakeSink()
     action = process_event(
         ev("c", after={"id": 1, "title": "x", "body": "y"}),
-        "unknown_table", CFG, FakeEmbedder(), sink,
+        "unknown_table",
+        CFG,
+        FakeEmbedder(),
+        sink,
     )
     assert action == "ignored"
     assert sink.upserts == []
@@ -81,7 +91,10 @@ def test_update_with_same_hash_refreshes_metadata_only():
     sink = FakeSink(stored_hash=same)
     action = process_event(
         ev("u", after={"id": 1, "title": "标题", "body": "正文", "status": "archived"}),
-        "article", CFG, FakeEmbedder(), sink,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
     )
     assert action == "metadata_refreshed"
     assert sink.upserts == []
@@ -93,7 +106,10 @@ def test_update_with_changed_text_reembeds():
     sink = FakeSink(stored_hash=text_hash("旧文本"))
     action = process_event(
         ev("u", after={"id": 1, "title": "标题", "body": "新正文"}),
-        "article", CFG, FakeEmbedder(), sink,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
     )
     assert action == "upserted"
     assert len(sink.upserts) == 1
@@ -119,6 +135,9 @@ def test_unknown_op_ignored():
 
 
 def test_upsert_without_pk_ignored():
-    assert process_event(
-        ev("c", after={"title": "无主键"}), "article", CFG, FakeEmbedder(), FakeSink()
-    ) == "ignored"
+    assert (
+        process_event(
+            ev("c", after={"title": "无主键"}), "article", CFG, FakeEmbedder(), FakeSink()
+        )
+        == "ignored"
+    )

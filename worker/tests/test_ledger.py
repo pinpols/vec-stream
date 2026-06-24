@@ -5,6 +5,7 @@
 
 psycopg 只连真 PG,故用 mock cursor 断言"账本 SQL 被执行 + 单调条件",
 不起真实 DB(参考 test_process_event.py 的 mock 风格)。"""
+
 from unittest.mock import MagicMock
 
 from vec_stream_worker.config import Config
@@ -52,11 +53,16 @@ def ev(op, after=None, before=None):
 
 # ── 1) offset_ref 透传 ───────────────────────────────────────────────
 
+
 def test_upsert_passes_offset_ref():
     sink = RecordingSink()
     process_event(
         ev("c", after={"id": 1, "tenant_id": "t1", "title": "标题", "body": "正文"}),
-        "article", CFG, FakeEmbedder(), sink, offset_ref=REF,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
+        offset_ref=REF,
     )
     assert sink.upserts[0]["offset_ref"] == REF
 
@@ -65,7 +71,11 @@ def test_metadata_refresh_passes_offset_ref():
     sink = RecordingSink(stored_hash=text_hash("标题\n正文"))
     process_event(
         ev("u", after={"id": 1, "title": "标题", "body": "正文", "status": "archived"}),
-        "article", CFG, FakeEmbedder(), sink, offset_ref=REF,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
+        offset_ref=REF,
     )
     assert sink.metadata_updates == [REF]
 
@@ -74,7 +84,11 @@ def test_delete_passes_offset_ref():
     sink = RecordingSink()
     process_event(
         ev("d", before={"id": 7, "tenant_id": "t1"}),
-        "article", CFG, FakeEmbedder(), sink, offset_ref=REF,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
+        offset_ref=REF,
     )
     assert sink.deletes == [REF]
 
@@ -89,7 +103,12 @@ def test_source_row_gone_delete_passes_offset_ref():
     sink = RecordingSink()
     action = process_event(
         ev("u", after={"id": 9, "tenant_id": "t1", "title": "x", "body": "y"}),
-        "article", CFG, FakeEmbedder(), sink, source_db=GoneDB(), offset_ref=REF,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
+        source_db=GoneDB(),
+        offset_ref=REF,
     )
     assert action == "deleted"
     assert sink.deletes == [REF]
@@ -100,12 +119,16 @@ def test_no_offset_ref_defaults_none():
     sink = RecordingSink()
     process_event(
         ev("c", after={"id": 1, "tenant_id": "t1", "title": "标题", "body": "正文"}),
-        "article", CFG, FakeEmbedder(), sink,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
     )
     assert sink.upserts[0]["offset_ref"] is None
 
 
 # ── 2) VectorSink 同事务账本 SQL ────────────────────────────────────
+
 
 def _mock_sink():
     """造一个 cursor 被 mock 的 VectorSink,捕获其 execute 调用。"""
@@ -121,8 +144,14 @@ def _mock_sink():
 def test_vectorsink_upsert_records_ledger_in_same_txn():
     sink, conn, cur = _mock_sink()
     sink.upsert_row(
-        tenant_id="t1", source_table="article", source_pk="1", text_hash="h",
-        chunks=["c"], embeddings=[[0.0]], metadata={}, offset_ref=REF,
+        tenant_id="t1",
+        source_table="article",
+        source_pk="1",
+        text_hash="h",
+        chunks=["c"],
+        embeddings=[[0.0]],
+        metadata={},
+        offset_ref=REF,
     )
     sqls = " ".join(call.args[0] for call in cur.execute.call_args_list)
     assert "INSERT INTO processed_offsets" in sqls
@@ -130,8 +159,7 @@ def test_vectorsink_upsert_records_ledger_in_same_txn():
     assert "EXCLUDED.last_offset > processed_offsets.last_offset" in sqls
     # 账本写在 commit 之前的同一事务
     conn.commit.assert_called_once()
-    ledger_call = [c for c in cur.execute.call_args_list
-                   if "processed_offsets" in c.args[0]][0]
+    ledger_call = [c for c in cur.execute.call_args_list if "processed_offsets" in c.args[0]][0]
     assert ledger_call.args[1] == ("cdc.public.article", 3, 4242)
 
 

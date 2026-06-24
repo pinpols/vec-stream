@@ -1,6 +1,6 @@
 """prompt 构建纯函数测试(不调 API)。"""
-from vec_stream_rag.llm import build_context, build_user_prompt
 
+from vec_stream_rag.llm import build_context, build_user_prompt
 
 SOURCES = [
     {"n": 1, "title": "pgvector 入门", "content": "pgvector 支持 HNSW 索引。"},

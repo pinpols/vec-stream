@@ -7,6 +7,7 @@
 源表只有 article/product/comment 是 CDC 监听对象;doc_vectors.source_table
 取值即这些表名。DSN 从 env(RAG_PG_DSN / PG_DSN)。
 """
+
 from __future__ import annotations
 
 import json
@@ -21,10 +22,10 @@ SOURCE_TABLES = ("article", "product", "comment")
 class DriftRow:
     tenant_id: str
     source_table: str
-    source_rows: int       # 源表该 (tenant, table) 行数
-    indexed_pks: int       # doc_vectors 中 distinct source_pk 数
-    missing: int           # 源有向量无(漏处理)
-    orphan: int            # 向量有源无(残留)
+    source_rows: int  # 源表该 (tenant, table) 行数
+    indexed_pks: int  # doc_vectors 中 distinct source_pk 数
+    missing: int  # 源有向量无(漏处理)
+    orphan: int  # 向量有源无(残留)
 
     @property
     def drift(self) -> int:
@@ -42,7 +43,7 @@ class ReconcileReport:
     def to_json(self) -> str:
         d = asdict(self)
         # @property 不进 asdict,补回 drift 便于消费方
-        for r, src in zip(d["rows"], self.rows):
+        for r, src in zip(d["rows"], self.rows, strict=False):
             r["drift"] = src.drift
         return json.dumps(d, ensure_ascii=False, indent=2)
 

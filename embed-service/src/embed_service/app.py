@@ -20,6 +20,7 @@ SentenceTransformer.encode 是同步重活,且对 GPU/向量化友好——批�
 - 单请求文本数 > MAX_BATCH → 413(请求实体过大,调用方应自行切片);
 - 在途批处理队列积压 > MAX_QUEUE → 429(过载,调用方应退避重试)。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -45,9 +46,7 @@ ENCODE_BATCH_SIZE = int(os.getenv("ENCODE_BATCH_SIZE", "32"))
 PORT = int(os.getenv("PORT", "8200"))
 
 # bge 系列约定:检索 query 加指令前缀(passage 不加)。
-QUERY_PREFIX = os.getenv(
-    "EMBED_QUERY_PREFIX", "为这个句子生成表示以用于检索相关文章:"
-)
+QUERY_PREFIX = os.getenv("EMBED_QUERY_PREFIX", "为这个句子生成表示以用于检索相关文章:")
 
 # 进程级共享状态(模型 + 动态批处理调度器)。
 state: dict = {}
@@ -121,7 +120,7 @@ class BatchScheduler:
                     break
                 try:
                     nxt = await asyncio.wait_for(self._queue.get(), timeout=remaining)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
                 batch.append(nxt)
                 count += len(nxt.texts)
@@ -148,9 +147,7 @@ class BatchScheduler:
     def _encode(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        vecs = self._model.encode(
-            texts, normalize_embeddings=True, batch_size=ENCODE_BATCH_SIZE
-        )
+        vecs = self._model.encode(texts, normalize_embeddings=True, batch_size=ENCODE_BATCH_SIZE)
         return [v.tolist() for v in vecs]
 
 
@@ -207,9 +204,7 @@ def healthz():
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(req: EmbedRequest):
     if req.kind not in ("passage", "query"):
-        raise HTTPException(
-            status_code=422, detail="kind must be 'passage' or 'query'"
-        )
+        raise HTTPException(status_code=422, detail="kind must be 'passage' or 'query'")
     if len(req.texts) > MAX_BATCH:
         raise HTTPException(
             status_code=413,

@@ -8,6 +8,7 @@
 - 动态批处理:多个并发 /embed 被合并成一次 encode 调用;
 - /healthz 模型加载状态。
 """
+
 import os
 
 import pytest

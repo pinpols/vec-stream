@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # 每个模块独立一个 job(矩阵展开),互不阻塞、可并行。
+  # worker/rag/embed-service 依赖 sentence-transformers/torch 较重,
+  # 但"加载真模型"的测试本身是 mock 的,不会真下载权重,正常 uv sync 即可。
+  lint-and-test:
+    name: ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - worker
+          - rag
+          - eval
+          - embed-service
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          # 缓存 uv 下载/构建的依赖(torch 等重依赖),按各模块 lock 文件失效。
+          enable-cache: true
+          cache-dependency-glob: "${{ matrix.module }}/uv.lock"
+
+      - name: Sync dependencies
+        run: uv sync
+
+      # ruff 不是任何模块的依赖,用 uvx 跑固定版本的独立工具
+      # (与 .pre-commit-config.yaml 保持同一 pin)。--config 指向仓库根统一规则。
+      - name: Ruff lint (root ruff.toml)
+        run: uvx ruff@0.8.6 check --config ../ruff.toml .
+
+      - name: Ruff format check
+        run: uvx ruff@0.8.6 format --check --config ../ruff.toml .
+
+      - name: Pytest
+        run: uv run pytest -q

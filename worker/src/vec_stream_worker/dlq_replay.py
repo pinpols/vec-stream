@@ -9,6 +9,7 @@
     uv run python -m vec_stream_worker.dlq_replay --dry-run  # 只看不投
     uv run python -m vec_stream_worker.dlq_replay --limit 10
 """
+
 import argparse
 import logging
 import sys
@@ -85,31 +86,49 @@ def replay(cfg: Config, limit: int | None, dry_run: bool) -> int:
             # 重投次数上限:超限不再回投源 topic,落档 dead_letter_archive 待人工排查
             if replay_count >= cfg.dlq_max_replays:
                 if dry_run:
-                    log.info("[dry-run] would ARCHIVE (replay_count=%d ≥ %d) error=%s",
-                             replay_count, cfg.dlq_max_replays, error)
+                    log.info(
+                        "[dry-run] would ARCHIVE (replay_count=%d ≥ %d) error=%s",
+                        replay_count,
+                        cfg.dlq_max_replays,
+                        error,
+                    )
                 else:
                     _archive(cfg.pg_dsn, msg, source_topic, replay_count, error)
                     consumer.commit(msg)
-                    log.warning("archived offset=%s (重投 %d 次仍失败) error=%s",
-                                msg.offset(), replay_count, error)
+                    log.warning(
+                        "archived offset=%s (重投 %d 次仍失败) error=%s",
+                        msg.offset(),
+                        replay_count,
+                        error,
+                    )
                 replayed += 1
                 if msg.offset() + 1 >= high_watermarks[msg.partition()]:
                     pending.discard(msg.partition())
                 continue
             if dry_run:
-                log.info("[dry-run] would replay(#%d) → %s (error was: %s) value=%.80s",
-                         replay_count + 1, source_topic, error, msg.value())
+                log.info(
+                    "[dry-run] would replay(#%d) → %s (error was: %s) value=%.80s",
+                    replay_count + 1,
+                    source_topic,
+                    error,
+                    msg.value(),
+                )
             else:
                 # 带递增的 replay_count:消息再次进 DLQ 时计数累加,最终触发归档
-                new_headers = [(k, v) for k, v in (msg.headers() or [])
-                               if k != "replay_count"]
+                new_headers = [(k, v) for k, v in (msg.headers() or []) if k != "replay_count"]
                 new_headers.append(("replay_count", str(replay_count + 1).encode()))
-                producer.produce(source_topic, key=msg.key(), value=msg.value(),
-                                 headers=new_headers)
+                producer.produce(
+                    source_topic, key=msg.key(), value=msg.value(), headers=new_headers
+                )
                 producer.flush(10)
                 consumer.commit(msg)
-                log.info("replayed(#%d) offset=%s → %s (error was: %s)",
-                         replay_count + 1, msg.offset(), source_topic, error)
+                log.info(
+                    "replayed(#%d) offset=%s → %s (error was: %s)",
+                    replay_count + 1,
+                    msg.offset(),
+                    source_topic,
+                    error,
+                )
             replayed += 1
             if msg.offset() + 1 >= high_watermarks[msg.partition()]:
                 pending.discard(msg.partition())

@@ -6,6 +6,7 @@
 下次操作懒重建——异常向上抛,交给消费侧的重试逻辑。
 
 make_sink() 按 cfg.vector_backend 选择 pgvector / qdrant 后端,两者同接口。"""
+
 import json
 
 import psycopg
@@ -18,8 +19,9 @@ def make_sink(cfg):
         from .qdrant_sink import QdrantSink
 
         # Qdrant 无 PG 事务,账本 best-effort 记进 PG(用 worker 的 pg_dsn)
-        return QdrantSink(cfg.qdrant_url, cfg.qdrant_collection, cfg.embed_dim,
-                          ledger_dsn=cfg.pg_dsn)
+        return QdrantSink(
+            cfg.qdrant_url, cfg.qdrant_collection, cfg.embed_dim, ledger_dsn=cfg.pg_dsn
+        )
     return VectorSink(cfg.pg_dsn)
 
 
@@ -66,8 +68,7 @@ class VectorSink:
             conn = self._connection()
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT last_offset FROM processed_offsets "
-                    "WHERE topic=%s AND partition=%s",
+                    "SELECT last_offset FROM processed_offsets " "WHERE topic=%s AND partition=%s",
                     (topic, partition),
                 )
                 row = cur.fetchone()
@@ -96,7 +97,7 @@ class VectorSink:
                     "DELETE FROM doc_vectors WHERE tenant_id=%s AND source_table=%s AND source_pk=%s",
                     (tenant_id, source_table, source_pk),
                 )
-                for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+                for i, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=False)):
                     cur.execute(
                         """
                         INSERT INTO doc_vectors
@@ -148,7 +149,11 @@ class VectorSink:
             raise
 
     def update_metadata(
-        self, tenant_id: str, source_table: str, source_pk: str, metadata: dict,
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
+        metadata: dict,
         offset_ref: tuple[str, int, int] | None = None,
     ) -> int:
         """文本未变(hash 命中)但结构化字段可能变了:只刷 metadata,不重 embed。
@@ -175,7 +180,10 @@ class VectorSink:
             raise
 
     def delete_row(
-        self, tenant_id: str, source_table: str, source_pk: str,
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
         offset_ref: tuple[str, int, int] | None = None,
     ) -> int:
         """删除该行全部 chunk(op=d),返回删除条数。"""

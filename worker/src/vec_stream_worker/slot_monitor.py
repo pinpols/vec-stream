@@ -2,6 +2,7 @@
 - replication slot lag:slot 不被消费时 PG 会无限堆 WAL 直到磁盘爆,超阈值告警;
 - DLQ 积压:high watermark 与 replay group 已 commit 位点的差值。
 两者同时写日志与 Prometheus Gauge。"""
+
 import logging
 import threading
 import time
@@ -70,11 +71,18 @@ def start_monitor(cfg) -> threading.Thread:
                     SLOT_ACTIVE.set(1 if active else 0)
                     lag_mb = lag_bytes / 1024 / 1024
                     if not active:
-                        log.warning("slot %s INACTIVE, lag=%.1fMB — connector 掉线,WAL 正在累积!",
-                                    cfg.slot_name, lag_mb)
+                        log.warning(
+                            "slot %s INACTIVE, lag=%.1fMB — connector 掉线,WAL 正在累积!",
+                            cfg.slot_name,
+                            lag_mb,
+                        )
                     elif lag_mb >= cfg.slot_lag_warn_mb:
-                        log.warning("slot %s lag=%.1fMB 超过阈值 %dMB",
-                                    cfg.slot_name, lag_mb, cfg.slot_lag_warn_mb)
+                        log.warning(
+                            "slot %s lag=%.1fMB 超过阈值 %dMB",
+                            cfg.slot_name,
+                            lag_mb,
+                            cfg.slot_lag_warn_mb,
+                        )
                     else:
                         log.info("slot %s lag=%.1fMB active=%s", cfg.slot_name, lag_mb, active)
             except Exception as e:  # noqa: BLE001 —— 监控不能拖垮主流程

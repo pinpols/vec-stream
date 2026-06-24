@@ -1,9 +1,11 @@
 """Prometheus 指标(DESIGN.md §5 可观测):同步延迟 / 跳过率 / DLQ / slot lag。
 worker 启动时在 METRICS_PORT 暴露 /metrics,Prometheus 直接抓。"""
+
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 EVENTS = Counter(
-    "vec_stream_events_total", "CDC events processed by table and action",
+    "vec_stream_events_total",
+    "CDC events processed by table and action",
     ["table", "action"],
 )
 CHUNKS_EMBEDDED = Counter(
@@ -17,9 +19,7 @@ SYNC_DELAY = Histogram(
 )
 SLOT_LAG_BYTES = Gauge("vec_stream_slot_lag_bytes", "Replication slot WAL lag")
 SLOT_ACTIVE = Gauge("vec_stream_slot_active", "Replication slot active (1/0)")
-DLQ_BACKLOG = Gauge(
-    "vec_stream_dlq_backlog", "DLQ messages not yet consumed by the replay group"
-)
+DLQ_BACKLOG = Gauge("vec_stream_dlq_backlog", "DLQ messages not yet consumed by the replay group")
 
 
 def start_metrics(port: int) -> None:

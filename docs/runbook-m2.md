@@ -57,6 +57,13 @@ python -m vec_stream_worker.dlq_replay               # 重投(带 replay_count,�
 
 > pgvector 后端:表名 `doc_vectors` 当前固定,蓝绿需把表名参数化或换 schema/库(同样的双写→评估→切流程)。Qdrant 后端 collection 即天然的切换单元,推荐用它做蓝绿。
 
+索引配置保护:worker 启动会按索引写 `index_metadata`
+(`pgvector:doc_vectors` 或 `qdrant:<collection>`),rag 启动会校验
+`EMBED_MODEL` / `EMBED_DIM` / `CHUNK_SIZE` /
+`CHUNK_OVERLAP` / `VECTOR_BACKEND` / `QDRANT_COLLECTION`。不一致时 rag 直接失败,
+这是防止"旧索引用新 query embedding"的硬保护。旧库升级后先手动跑 `02-security.sh`,
+再启动对应 worker 写入元数据;迁移窗口必要时可临时 `INDEX_METADATA_CHECK=false`。
+
 ## 6. worker 水平扩展验证(item 10)
 
 代码已支持(同 `KAFKA_GROUP_ID` → Kafka 按分区分配;Debezium 按 PK 做 key,同一行事件落同一分区,顺序天然保持):

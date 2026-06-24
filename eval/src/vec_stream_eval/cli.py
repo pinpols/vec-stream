@@ -1,4 +1,5 @@
 """命令行入口:python -m vec_stream_eval retrieval|generation|reconcile。"""
+
 from __future__ import annotations
 
 import argparse
@@ -16,8 +17,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # retrieval
     p_ret = sub.add_parser("retrieval", help="检索质量 recall@k / MRR(打真 /search)")
-    p_ret.add_argument("--golden", default=None, help="golden jsonl 路径(默认 eval/golden/queries.jsonl)")
-    p_ret.add_argument("--rag-url", default=None, help="rag 服务地址(默认 env RAG_URL 或 http://localhost:8000)")
+    p_ret.add_argument(
+        "--golden", default=None, help="golden jsonl 路径(默认 eval/golden/queries.jsonl)"
+    )
+    p_ret.add_argument(
+        "--rag-url", default=None, help="rag 服务地址(默认 env RAG_URL 或 http://localhost:8000)"
+    )
     p_ret.add_argument("-k", type=int, default=5, help="recall@k 与召回 top_k(默认 5)")
     p_ret.add_argument("--rerank", action="store_true", help="开启服务端 rerank")
     p_ret.add_argument("--json-out", default=None, help="把报告写到 JSON 文件")
@@ -37,8 +42,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "retrieval":
         retrieval.run(
-            golden_path=args.golden, rag_url=args.rag_url,
-            k=args.k, rerank=args.rerank, json_out=args.json_out,
+            golden_path=args.golden,
+            rag_url=args.rag_url,
+            k=args.k,
+            rerank=args.rerank,
+            json_out=args.json_out,
         )
     elif args.cmd == "generation":
         generation.run(golden_path=args.golden, rag_url=args.rag_url, json_out=args.json_out)

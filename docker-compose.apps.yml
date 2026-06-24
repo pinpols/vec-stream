@@ -1,0 +1,96 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 应用层 overlay:把 worker / rag(+ 可选 eval)三个 Python 服务接入基础设施栈。
+# 基础设施(postgres/kafka/connect/qdrant)在主 docker-compose.yml,本文件不改动它。
+#
+# 用法(与主 compose 叠加,默认同 project、同默认网络,服务名互通):
+#   docker compose -f docker-compose.yml -f docker-compose.apps.yml up -d worker rag
+#
+# 一次性评估 CLI(eval 在 tools profile,不随上面命令起):
+#   docker compose -f docker-compose.yml -f docker-compose.apps.yml \
+#     --profile tools run --rm eval reconcile
+#   (子命令/参数追加在 eval 后面,如 retrieval / generation / reconcile)
+#
+# 校验合并合法(不 build):
+#   docker compose -f docker-compose.yml -f docker-compose.apps.yml config >/dev/null
+#
+# ⚠️ 容器网络地址:容器之间用服务名+容器内端口互连,不是宿主映射端口。
+#    DB 主机名是 postgres、端口 5432(不是宿主的 5433);Kafka 是 kafka:29092(不是 9092);
+#    Qdrant 是 qdrant:6333。下面用显式 environment 覆盖 .env 里的 localhost:5433/9092 值。
+#    最小权限角色:worker 用 vs_worker,rag 用 vs_rag,密码取自 .env 的 WORKER_PASSWORD/RAG_PASSWORD。
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  worker:
+    build:
+      context: ./worker
+    image: vec-stream-worker:local
+    container_name: vec-stream-worker
+    # 先注入 .env 全量配置(EMBED_*/INDEX_METADATA_*/VECTOR_BACKEND/RAG_API_KEYS 等),
+    # 再用 environment 覆盖其中的连接地址(.env 里是宿主 localhost:5433/9092,容器内不通)。
+    env_file:
+      - .env
+    environment:
+      # 容器网络:vs_worker@postgres:5432(覆盖 .env 的 localhost:5433)
+      WORKER_PG_DSN: postgresql://vs_worker:${WORKER_PASSWORD}@postgres:5432/${POSTGRES_DB:-vec_stream}
+      # 容器网络:kafka 内部 listener
+      KAFKA_BOOTSTRAP: kafka:29092
+      # 若用独立 embed-service,容器网络地址(本 overlay 不定义该服务,默认进程内 local 模型)
+      # EMBED_SERVICE_URL: http://embed-service:8200
+      # Qdrant 后端(VECTOR_BACKEND=qdrant 时生效)
+      QDRANT_URL: http://qdrant:6333
+      METRICS_PORT: "9100"
+    ports:
+      # Prometheus metrics 暴露到宿主(可选,便于本地抓取/调试)
+      - "9100:9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rag:
+    build:
+      context: ./rag
+    image: vec-stream-rag:local
+    container_name: vec-stream-rag
+    env_file:
+      - .env
+    environment:
+      # 容器网络:vs_rag@postgres:5432(覆盖 .env 的 localhost:5433)
+      RAG_PG_DSN: postgresql://vs_rag:${RAG_PASSWORD}@postgres:5432/${POSTGRES_DB:-vec_stream}
+      # rag 不直接连 Kafka,但保留 Qdrant/embed 容器地址覆盖
+      QDRANT_URL: http://qdrant:6333
+      # EMBED_SERVICE_URL: http://embed-service:8200
+    ports:
+      # FastAPI 暴露到宿主 8000
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # 一次性评估 CLI,非常驻服务 —— 放 tools profile,默认不随 up 启动。
+  # 用 `--profile tools run --rm eval <subcommand>` 触发,跑完即退。
+  # 注意:pip install . 后包在 site-packages,golden 默认路径(parents[2]/golden)失效,
+  # 镜像已把 golden 拷到 /app/golden;retrieval/generation 子命令请显式传
+  #   --golden /app/golden/queries.jsonl
+  # reconcile 子命令直连 PG(用上面的 RAG_PG_DSN/PG_DSN),不需要 golden。
+  eval:
+    build:
+      context: ./eval
+    image: vec-stream-eval:local
+    container_name: vec-stream-eval
+    profiles:
+      - tools
+    env_file:
+      - .env
+    environment:
+      # 对账直连 PG;评估检索/生成时也可指向 rag 服务(容器网络 http://rag:8000)
+      RAG_PG_DSN: postgresql://vs_rag:${RAG_PASSWORD}@postgres:5432/${POSTGRES_DB:-vec_stream}
+      PG_DSN: postgresql://vs_rag:${RAG_PASSWORD}@postgres:5432/${POSTGRES_DB:-vec_stream}
+      # eval 通过 HTTP 打 rag 服务(retrieval/generation 子命令用,变量名 RAG_URL)
+      RAG_URL: http://rag:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"

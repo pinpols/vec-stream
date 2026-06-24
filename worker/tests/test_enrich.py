@@ -1,4 +1,5 @@
 """跨表反查 + 子表触发父文档重建 + 「以源库当前态为准」语义的测试。"""
+
 import pytest
 
 from vec_stream_worker.config import Config
@@ -25,7 +26,13 @@ class FakeSourceDB:
 
 
 CFG = Config()
-ARTICLE_1 = {"id": 1, "tenant_id": "default", "title": "标题", "body": "正文", "status": "published"}
+ARTICLE_1 = {
+    "id": 1,
+    "tenant_id": "default",
+    "title": "标题",
+    "body": "正文",
+    "status": "published",
+}
 
 
 def test_enrich_appends_related_text_and_affects_hash():
@@ -50,7 +57,11 @@ def test_upsert_uses_current_db_state_not_stale_event():
     db = FakeSourceDB(rows={("article", 1): current})
     process_event(
         ev("u", after={"id": 1, "title": "旧标题", "body": "旧正文"}),
-        "article", CFG, FakeEmbedder(), sink, db,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
+        db,
     )
     assert "新标题" in sink.upserts[0]["chunks"][0]
     assert "旧标题" not in sink.upserts[0]["chunks"][0]
@@ -62,7 +73,11 @@ def test_upsert_with_row_gone_deletes_vectors():
     db = FakeSourceDB(rows={})
     action = process_event(
         ev("c", after={"id": 9, "tenant_id": "t1", "title": "x", "body": "y"}),
-        "article", CFG, FakeEmbedder(), sink, db,
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
+        db,
     )
     assert action == "deleted"
     assert sink.deletes == [("t1", "article", "9")]
@@ -70,12 +85,22 @@ def test_upsert_with_row_gone_deletes_vectors():
 
 
 def test_comment_event_rebuilds_parent_article():
-    parent = {"id": 5, "tenant_id": "default", "title": "HNSW", "body": "图算法", "status": "published"}
+    parent = {
+        "id": 5,
+        "tenant_id": "default",
+        "title": "HNSW",
+        "body": "图算法",
+        "status": "published",
+    }
     sink = FakeSink()
     db = FakeSourceDB(rows={("article", 5): parent}, enrich_text="新评论")
     action = process_event(
         ev("c", after={"id": 100, "article_id": 5, "body": "新评论"}),
-        "comment", CFG, FakeEmbedder(), sink, db,
+        "comment",
+        CFG,
+        FakeEmbedder(),
+        sink,
+        db,
     )
     assert action == "upserted"
     assert sink.upserts[0]["source_table"] == "article"
@@ -89,7 +114,11 @@ def test_comment_delete_also_rebuilds_parent_via_before():
     db = FakeSourceDB(rows={("article", 5): parent}, enrich_text="")
     action = process_event(
         ev("d", before={"id": 100, "article_id": 5, "body": "被删评论"}),
-        "comment", CFG, FakeEmbedder(), sink, db,
+        "comment",
+        CFG,
+        FakeEmbedder(),
+        sink,
+        db,
     )
     assert action == "upserted"
     assert sink.upserts[0]["source_pk"] == "5"
@@ -99,7 +128,11 @@ def test_comment_delete_also_rebuilds_parent_via_before():
 def test_comment_with_missing_parent_ignored():
     action = process_event(
         ev("c", after={"id": 100, "article_id": 999, "body": "孤儿评论"}),
-        "comment", CFG, FakeEmbedder(), FakeSink(), FakeSourceDB(),
+        "comment",
+        CFG,
+        FakeEmbedder(),
+        FakeSink(),
+        FakeSourceDB(),
     )
     assert action == "ignored"
 
@@ -107,7 +140,11 @@ def test_comment_with_missing_parent_ignored():
 def test_comment_without_source_db_ignored():
     action = process_event(
         ev("c", after={"id": 100, "article_id": 5, "body": "x"}),
-        "comment", CFG, FakeEmbedder(), FakeSink(), None,
+        "comment",
+        CFG,
+        FakeEmbedder(),
+        FakeSink(),
+        None,
     )
     assert action == "ignored"
 

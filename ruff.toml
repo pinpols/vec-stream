@@ -1,0 +1,52 @@
+# 统一 lint + format 规则,覆盖 monorepo 下 4 个模块
+# (worker / rag / eval / embed-service)。
+# 务实基线:规则集不激进,现有代码经少量 `ruff format` + 自动 fix 即可通过。
+
+line-length = 100
+target-version = "py312"
+
+# 不扫描虚拟环境、缓存、构建产物。
+exclude = [
+    ".venv",
+    "**/.venv",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    ".git",
+    "build",
+    "dist",
+]
+
+[lint]
+# 落地基线规则集:
+#   E/W  pycodestyle  —— 基本代码风格
+#   F    pyflakes     —— 未用导入/变量、未定义名等真实问题
+#   I    isort        —— import 排序(format 阶段自动整理)
+#   UP   pyupgrade    —— py312 现代语法
+#   B    flake8-bugbear —— 常见易错模式
+#   C4   flake8-comprehensions —— 推导式简化
+# 刻意不启用 D(文档串)/ANN(注解全家桶)等会产生海量人工修复的规则。
+select = ["E", "W", "F", "I", "UP", "B", "C4"]
+
+ignore = [
+    "E501",  # 行长由 formatter 管,lint 不重复报(避免长字符串/URL 海量报错)
+    "B008",  # FastAPI 依赖注入习惯用 Depends() 作默认值
+    "E402",  # 入口模块刻意在 import 间插常量块(无法自动 fix,不强制改业务代码)
+]
+
+[lint.per-file-ignores]
+# 测试里允许 assert、未用 fixture 等更宽松。
+"**/tests/**" = ["B011"]
+# __init__ 常做重导出。
+"**/__init__.py" = ["F401"]
+
+[lint.isort]
+known-first-party = [
+    "vec_stream_worker",
+    "vec_stream_rag",
+    "vec_stream_eval",
+    "embed_service",
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"

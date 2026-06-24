@@ -7,6 +7,7 @@ M2 领域二:embedding 推理可拆为独立服务,worker 扩容时不再每实�
 bge 系列约定:passage 不加前缀,query 加检索指令前缀(query 前缀由 embed-service / rag
 侧处理,worker 只编码 passage)。两条路径都 normalize,向量分布可互换,无需重建索引。
 """
+
 import logging
 
 log = logging.getLogger("embedder")

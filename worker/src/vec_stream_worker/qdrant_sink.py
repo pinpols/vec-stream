@@ -4,6 +4,7 @@ update_metadata / delete_row),靠确定性 uuid5 point id 保持幂等。
 处理账本:Qdrant 写入不是 PG 事务,无法与向量写入原子提交。按 ENTERPRISE.md
 「Qdrant 后端则记在 PG 里」——写完 Qdrant 后,单独 best-effort upsert
 processed_offsets(失败只 warn,不影响主流程,账本仅作审计参考非强一致真相)。"""
+
 import logging
 
 from qdrant_client import QdrantClient, models
@@ -37,7 +38,8 @@ class QdrantSink:
             # 过滤字段建 payload 索引(先过滤后召回的工程基础)
             for field in ("tenant_id", "source_table", "source_pk", "status"):
                 self.client.create_payload_index(
-                    collection_name=collection, field_name=field,
+                    collection_name=collection,
+                    field_name=field,
                     field_schema=models.PayloadSchemaType.KEYWORD,
                 )
             log.info("created qdrant collection %s (dim=%d, cosine)", collection, dim)
@@ -87,13 +89,21 @@ class QdrantSink:
         points, _ = self.client.scroll(
             collection_name=self.collection,
             scroll_filter=_row_filter(tenant_id, source_table, source_pk),
-            limit=1, with_payload=["text_hash"], with_vectors=False,
+            limit=1,
+            with_payload=["text_hash"],
+            with_vectors=False,
         )
         return points[0].payload.get("text_hash") if points else None
 
     def upsert_row(
-        self, tenant_id: str, source_table: str, source_pk: str,
-        text_hash: str, chunks: list[str], embeddings: list[list[float]], metadata: dict,
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
+        text_hash: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        metadata: dict,
         offset_ref: tuple[str, int, int] | None = None,
     ) -> None:
         # 先删该行全部旧 chunk(chunk 数变化不留孤儿),再写新的
@@ -119,13 +129,17 @@ class QdrantSink:
                     "title": metadata.get("title"),
                 },
             )
-            for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
+            for i, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=False))
         ]
         self.client.upsert(collection_name=self.collection, points=points, wait=True)
         self._record_offset(offset_ref)
 
     def update_metadata(
-        self, tenant_id: str, source_table: str, source_pk: str, metadata: dict,
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
+        metadata: dict,
         offset_ref: tuple[str, int, int] | None = None,
     ) -> int:
         self.client.set_payload(
@@ -138,7 +152,10 @@ class QdrantSink:
         return 1
 
     def delete_row(
-        self, tenant_id: str, source_table: str, source_pk: str,
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
         offset_ref: tuple[str, int, int] | None = None,
     ) -> int:
         self.client.delete(

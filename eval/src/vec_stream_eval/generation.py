@@ -9,6 +9,7 @@
 
 /ask 需要 OPENAI_API_KEY 才能真跑(rag 生成层走 OpenAI 兼容协议);无 key 时跳过并提示(不算失败)。
 """
+
 from __future__ import annotations
 
 import json
@@ -18,7 +19,7 @@ from dataclasses import asdict, dataclass
 
 import httpx
 
-from .golden import GoldenQuery, load_golden
+from .golden import load_golden
 
 DEFAULT_RAG_URL = os.getenv("RAG_URL", "http://localhost:8000")
 

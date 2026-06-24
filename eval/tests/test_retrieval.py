@@ -1,4 +1,5 @@
 """检索指标纯函数单测:用构造的召回结果验证 recall@k / MRR 算法正确。"""
+
 from vec_stream_eval.golden import GoldenQuery
 from vec_stream_eval.retrieval import (
     evaluate_retrieval,
@@ -75,10 +76,16 @@ def test_reciprocal_rank_takes_first_of_multiple():
 
 def test_evaluate_retrieval_aggregate():
     queries = [
-        GoldenQuery(query="q1", tenant_id="default",
-                    expected_pks=[{"source_table": "article", "source_pk": "1"}]),
-        GoldenQuery(query="q2", tenant_id="default",
-                    expected_pks=[{"source_table": "article", "source_pk": "2"}]),
+        GoldenQuery(
+            query="q1",
+            tenant_id="default",
+            expected_pks=[{"source_table": "article", "source_pk": "1"}],
+        ),
+        GoldenQuery(
+            query="q2",
+            tenant_id="default",
+            expected_pks=[{"source_table": "article", "source_pk": "2"}],
+        ),
     ]
 
     def fake_search(query, tenant_id, k, rerank):

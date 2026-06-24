@@ -1,0 +1,23 @@
+# 安装:uvx pre-commit install   (或 pipx install pre-commit && pre-commit install)
+# 全量跑一次:uvx pre-commit run --all-files
+#
+# ruff 规则统一读仓库根 ruff.toml(args 显式指定 --config,确保 monorepo 下
+# 不被各模块自身配置覆盖)。
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      # lint + 自动修(等价于本地的 ruff check --fix)
+      - id: ruff
+        args: ["--fix", "--config", "ruff.toml"]
+      # 格式化(等价于 ruff format)
+      - id: ruff-format
+        args: ["--config", "ruff.toml"]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files

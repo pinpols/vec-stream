@@ -1,4 +1,5 @@
 """确定性 ID 与文本 hash(幂等基石,见 DESIGN.md §3.3 b/c)。"""
+
 import hashlib
 import uuid
 

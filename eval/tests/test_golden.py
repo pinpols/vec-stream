@@ -1,4 +1,5 @@
 """Golden set 加载单测 + 仓库内 golden/queries.jsonl 可解析校验。"""
+
 import pytest
 
 from vec_stream_eval.golden import GoldenQuery, load_golden

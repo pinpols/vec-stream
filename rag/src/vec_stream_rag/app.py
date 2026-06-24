@@ -1,7 +1,8 @@
 """RAG 服务(阶段 2):
-  POST /search — 语义搜索:embed → tenant/status 过滤召回 → 可选 rerank
-  POST /ask    — RAG 问答:召回 → rerank → OpenAI 兼容 API 生成带 [n] 引用
+POST /search — 语义搜索:embed → tenant/status 过滤召回 → 可选 rerank
+POST /ask    — RAG 问答:召回 → rerank → OpenAI 兼容 API 生成带 [n] 引用
 """
+
 import json
 import logging
 import os
@@ -12,9 +13,14 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
+from .index_metadata import check_index_metadata
 from .llm import active_provider, api_key_env, generate_answer, llm_available
+from .logging_setup import setup_logging
 from .rerank import Reranker
 
+# 模块加载即装配 root logger(覆盖启动期日志);给 root 配 handler 不与 uvicorn 打架。
+# uvicorn access log 走自己的 logger,如需 JSON 化按 README 用 --log-config / --no-access-log。
+setup_logging()
 log = logging.getLogger("rag")
 
 # rag 用最小权限只读角色 vs_rag(不 BYPASSRLS):优先 RAG_PG_DSN,回退 PG_DSN。
@@ -39,12 +45,17 @@ EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "local")
 EMBED_OPENAI_BASE_URL = os.getenv("EMBED_OPENAI_BASE_URL", "")
 # 用远程 embedding(service 或 openai)时,本进程不加载本地 embedding 模型
 _USE_LOCAL_EMBED = not EMBED_SERVICE_URL and EMBED_PROVIDER != "openai"
+# 启动期索引配置一致性校验:确保 rag query embedding 与 worker 已构建索引同模型/同维/同切分。
+# 旧库首次升级时,先启动 worker 写入 index_metadata;必要时可临时 INDEX_METADATA_CHECK=false。
+INDEX_METADATA_CHECK = os.getenv("INDEX_METADATA_CHECK", "true").lower() == "true"
 
 state: dict = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if INDEX_METADATA_CHECK:
+        check_index_metadata(PG_DSN)
     # 用远程 embedding(service / openai)时不在本进程加载 embedding 模型(解耦省内存)
     state["model"] = SentenceTransformer(EMBED_MODEL) if _USE_LOCAL_EMBED else None
     state["reranker"] = Reranker(RERANK_MODEL) if RERANK_ENABLED else None
@@ -55,7 +66,10 @@ async def lifespan(app: FastAPI):
     else:
         # FastAPI 同步端点跑在线程池,psycopg 连接非线程安全 → 必须用连接池
         state["pool"] = ConnectionPool(
-            PG_DSN, min_size=1, max_size=8, open=True,
+            PG_DSN,
+            min_size=1,
+            max_size=8,
+            open=True,
             kwargs={"autocommit": True},
         )
     yield
@@ -116,8 +130,8 @@ class AskRequest(BaseModel):
     query: str
     # tenant_id 来自鉴权 token,不信请求体;此字段保留兼容但被忽略/覆盖。
     tenant_id: str | None = Field(default=None, deprecated=True)
-    top_k: int = Field(default=12, ge=1, le=50)   # 召回数
-    top_n: int = Field(default=4, ge=1, le=10)    # rerank 后喂给模型的数
+    top_k: int = Field(default=12, ge=1, le=50)  # 召回数
+    top_n: int = Field(default=4, ge=1, le=10)  # rerank 后喂给模型的数
     status: str | None = None
 
 
@@ -176,7 +190,9 @@ def _set_app_tenant(cur, tenant_id: str) -> None:
     cur.execute("SELECT set_config('app.tenant', %s, true)", (tenant_id,))
 
 
-def _retrieve_pgvector(qvec: list[float], tenant_id: str, top_k: int, status: str | None) -> list[dict]:
+def _retrieve_pgvector(
+    qvec: list[float], tenant_id: str, top_k: int, status: str | None
+) -> list[dict]:
     vec = str(qvec)
     # WHERE tenant_id 保留做双保险;真正强制隔离靠 RLS(SET app.tenant)。
     sql = """
@@ -195,14 +211,20 @@ def _retrieve_pgvector(qvec: list[float], tenant_id: str, top_k: int, status: st
             rows = cur.fetchall()
     return [
         {
-            "content": r[0], "score": round(float(r[1]), 4), "source_table": r[2],
-            "source_pk": r[3], "chunk_index": r[4], "metadata": r[5],
+            "content": r[0],
+            "score": round(float(r[1]), 4),
+            "source_table": r[2],
+            "source_pk": r[3],
+            "chunk_index": r[4],
+            "metadata": r[5],
         }
         for r in rows
     ]
 
 
-def _retrieve_qdrant(qvec: list[float], tenant_id: str, top_k: int, status: str | None) -> list[dict]:
+def _retrieve_qdrant(
+    qvec: list[float], tenant_id: str, top_k: int, status: str | None
+) -> list[dict]:
     """Qdrant 原生 payload 过滤 + HNSW 召回(先过滤后召回)。"""
     from qdrant_client import models
 
@@ -233,7 +255,7 @@ def apply_rerank(query: str, hits: list[dict], top_n: int) -> list[dict]:
     """有 reranker 用交叉编码器重排;没有则按向量分数截断。"""
     if state.get("reranker") and hits:
         scores = state["reranker"].rerank(query, [h["content"] for h in hits])
-        for h, s in zip(hits, scores):
+        for h, s in zip(hits, scores, strict=False):
             h["rerank_score"] = round(s, 4)
         hits = sorted(hits, key=lambda h: h["rerank_score"], reverse=True)
     return hits[:top_n]
@@ -257,18 +279,14 @@ def stats(tenant_id: str = Depends(require_tenant)):
         from qdrant_client import models
 
         flt = models.Filter(
-            must=[models.FieldCondition(
-                key="tenant_id", match=models.MatchValue(value=tenant_id)
-            )]
+            must=[models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tenant_id))]
         )
-        total = state["qdrant"].count(
-            QDRANT_COLLECTION, count_filter=flt
-        ).count
+        total = state["qdrant"].count(QDRANT_COLLECTION, count_filter=flt).count
         by_table = {
             str(hit.value): hit.count
-            for hit in state["qdrant"].facet(
-                collection_name=QDRANT_COLLECTION, key="source_table", facet_filter=flt
-            ).hits
+            for hit in state["qdrant"]
+            .facet(collection_name=QDRANT_COLLECTION, key="source_table", facet_filter=flt)
+            .hits
         }
         return {"backend": "qdrant", "total_vectors": total, "by_table": by_table}
     with state["pool"].connection() as conn, conn.cursor() as cur:
@@ -283,9 +301,7 @@ def stats(tenant_id: str = Depends(require_tenant)):
     return {
         "backend": "pgvector",
         "total_vectors": sum(r[2] for r in rows),
-        "by_table": [
-            {"table": r[0], "tenant": r[1], "vectors": r[2]} for r in rows
-        ],
+        "by_table": [{"table": r[0], "tenant": r[1], "vectors": r[2]} for r in rows],
     }
 
 
@@ -308,9 +324,7 @@ def ask(req: AskRequest, tenant_id: str = Depends(require_tenant)):
     # tenant 来自鉴权 token,忽略 req.tenant_id(不可信)。
     hits = retrieve(req.query, tenant_id, req.top_k, req.status)
     if not hits:
-        return AskResponse(
-            answer="知识库中没有相关信息。", sources=[], model="", usage={}
-        )
+        return AskResponse(answer="知识库中没有相关信息。", sources=[], model="", usage={})
     hits = apply_rerank(req.query, hits, req.top_n)
     sources = [
         {

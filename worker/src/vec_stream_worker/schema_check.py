@@ -6,6 +6,7 @@
 
 只读校验;reembed_parent 子表自身不进向量库、无 fields,跳过其字段检查(只验外键列)。
 """
+
 import logging
 
 import psycopg

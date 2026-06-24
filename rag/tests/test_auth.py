@@ -5,6 +5,7 @@
 - monkeypatch app.retrieve 捕获实际传入的 tenant(验证来自 token 非请求体);
 - /healthz 不鉴权;无 key / 错 key → 401;正确 key → 200 且 tenant 来自 key。
 """
+
 import json
 
 import pytest
@@ -40,6 +41,7 @@ def no_real_startup(monkeypatch):
     monkeypatch.setattr(appmod, "Reranker", lambda *a, **k: None)
     monkeypatch.setattr(appmod, "RERANK_ENABLED", False)
     monkeypatch.setattr(appmod, "VECTOR_BACKEND", "pgvector")
+    monkeypatch.setattr(appmod, "check_index_metadata", lambda dsn: None)
 
     class _FakePool:
         def __init__(self, *a, **k):

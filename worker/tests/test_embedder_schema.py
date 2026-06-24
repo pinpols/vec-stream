@@ -1,4 +1,5 @@
 """make_embedder 工厂选择 + schema_check 校验(M2)。"""
+
 import sys
 import types
 
@@ -156,10 +157,13 @@ def _patch_connect(monkeypatch, cols):
 
 
 def test_schema_check_passes(monkeypatch):
-    _patch_connect(monkeypatch, {
-        "article": ["id", "tenant_id", "title", "body", "status"],
-        "comment": ["id", "tenant_id", "article_id", "body"],
-    })
+    _patch_connect(
+        monkeypatch,
+        {
+            "article": ["id", "tenant_id", "title", "body", "status"],
+            "comment": ["id", "tenant_id", "article_id", "body"],
+        },
+    )
     tables = {
         "article": {"fields": ["title", "body"], "pk": "id", "title_field": "title"},
         "comment": {"reembed_parent": {"table": "article", "fk": "article_id"}},

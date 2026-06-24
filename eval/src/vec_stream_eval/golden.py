@@ -4,6 +4,7 @@ golden/queries.jsonl 每行一条人工标注:
   {"query": "...", "tenant_id": "default",
    "expected_pks": [{"source_table": "article", "source_pk": "1"}, ...]}
 """
+
 from __future__ import annotations
 
 import json

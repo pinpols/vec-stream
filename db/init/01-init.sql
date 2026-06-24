@@ -62,6 +62,14 @@ CREATE INDEX IF NOT EXISTS idx_doc_vectors_hnsw
 CREATE INDEX IF NOT EXISTS idx_doc_vectors_source
     ON doc_vectors (tenant_id, source_table, source_pk);
 
+-- 3b) 索引元数据:worker 写入当前 embedding/chunk/backend 配置;
+--     rag 启动时读取并校验,避免换模型/维度后悄悄用错检索向量。
+CREATE TABLE IF NOT EXISTS index_metadata (
+    name       TEXT PRIMARY KEY,
+    metadata   JSONB       NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 4) 几条示例数据
 INSERT INTO article (tenant_id, title, body) VALUES
     ('default', 'pgvector 入门', 'pgvector 是 PostgreSQL 的向量检索扩展,支持 HNSW 与 IVFFlat 索引。'),

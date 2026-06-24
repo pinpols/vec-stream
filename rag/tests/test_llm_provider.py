@@ -1,4 +1,5 @@
 """LLM 生成层:统一走 OpenAI 兼容协议(base_url 指 agent-ctl 网关或任意兼容服务)。"""
+
 import sys
 import types
 

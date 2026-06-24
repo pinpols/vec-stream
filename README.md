@@ -34,7 +34,7 @@ curl http://localhost:8083/connectors/vec-stream-pg/status
 
 > 旧环境升级注意:Postgres 官方镜像只会在 fresh `pgdata` 卷首次初始化时执行
 > `db/init/02-security.sh`。如果你已有旧卷,新增的最小权限角色、RLS、
-> `processed_offsets` 和 publication 不会自动创建。可删除卷重建,或手动应用一次:
+> `processed_offsets`、`index_metadata` 授权和 publication 不会自动创建。可删除卷重建,或手动应用一次:
 >
 > ```bash
 > set -a && source .env && set +a
@@ -113,6 +113,11 @@ curl -s -X POST http://localhost:8000/search \
   `docker compose up -d qdrant`,worker 用**新 consumer group** 从 Kafka 重放即全量回填
   (`VECTOR_BACKEND=qdrant KAFKA_GROUP_ID=vec-stream-worker-qdrant`);超出 Kafka retention
   的历史要走 Debezium re-snapshot。双 worker 双 group 可让两个库并行保持同步。
+- **索引配置一致性**:worker 启动时会按后端写 `index_metadata`
+  (`pgvector:doc_vectors` 或 `qdrant:<collection>`),rag 启动时校验
+  embedding model/dim、chunk 参数、vector backend 是否一致;换模型或维度时按蓝绿重建,
+  不要直接在旧索引上切新 query embedding。旧库升级后请先启动对应 worker 写入元数据,
+  必要时可临时 `INDEX_METADATA_CHECK=false`。
 - **冒烟验证**:基础设施、connector、worker、rag 都启动后,运行
   `bash scripts/smoke.sh`;脚本会检查 `/healthz`、connector 状态、插入一条
   smoke 文章并用带 API key 的 `/search` 验证召回。
@@ -125,3 +130,50 @@ curl -s -X POST http://localhost:8000/search \
 - ~~**阶段 3**:切 Qdrant、跨表文档、监控指标~~ ✅ 2026-06-10(全部阶段完成)
 
 详见 [`docs/DESIGN.md`](docs/DESIGN.md) §7。
+
+## 开发:lint / format / test / pre-commit
+
+monorepo 下 4 个模块(`worker` / `rag` / `eval` / `embed-service`)各用 `uv` 管理依赖,
+lint + format 规则统一在仓库根 [`ruff.toml`](ruff.toml)(line-length 100、target py312、
+规则集 `E/W/F/I/UP/B/C4`)。CI 见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+push / PR 时按模块矩阵各跑 `ruff check` + `ruff format --check` + `pytest`。
+
+### 一次性环境
+
+```bash
+# uv:https://docs.astral.sh/uv/(已装可跳过)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 装某个模块依赖(含 dev:pytest 等)
+cd worker && uv sync     # rag / eval / embed-service 同理
+```
+
+### lint / format(ruff,独立工具,不进任何模块依赖)
+
+```bash
+# 在仓库根,对全部模块跑;ruff 用 uvx 拉固定版本
+uvx ruff@0.8.6 check  --config ruff.toml worker rag eval embed-service   # 检查
+uvx ruff@0.8.6 check  --config ruff.toml --fix worker rag eval embed-service  # 自动修
+uvx ruff@0.8.6 format --config ruff.toml worker rag eval embed-service   # 格式化
+uvx ruff@0.8.6 format --check --config ruff.toml worker rag eval embed-service  # 只检查不改
+```
+
+### test(pytest,在各模块目录内)
+
+```bash
+cd worker && uv run pytest -q   # rag / eval / embed-service 同理
+```
+
+> worker / rag / embed-service 跑测试需各自依赖;"加载真模型"的用例已 mock,
+> 不会真下载权重。eval 测试是纯 mock,最轻量。
+
+### pre-commit(提交前自动 lint + format + 基础检查)
+
+```bash
+uvx pre-commit install            # 装 git hook(每次 commit 自动跑)
+uvx pre-commit run --all-files     # 手动对全仓库跑一次
+```
+
+hooks 见 [`.pre-commit-config.yaml`](.pre-commit-config.yaml):`ruff`(--fix)、
+`ruff-format`、`trailing-whitespace`、`end-of-file-fixer`、`check-yaml`、
+`check-added-large-files`。

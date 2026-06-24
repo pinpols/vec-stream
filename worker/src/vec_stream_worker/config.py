@@ -1,4 +1,5 @@
 """环境变量配置,全部带本地默认值,docker compose 场景零配置可跑。"""
+
 import json
 import os
 from dataclasses import dataclass, field
@@ -10,10 +11,12 @@ from dataclasses import dataclass, field
 # 可用 TABLES_JSON 环境变量整体覆盖。
 DEFAULT_TABLES: dict = {
     "article": {
-        "fields": ["title", "body"], "pk": "id", "title_field": "title",
+        "fields": ["title", "body"],
+        "pk": "id",
+        "title_field": "title",
         # 反查 SQL 用命名参数:%(pk)s=本行主键,%(tenant)s=租户(防跨租户混入)
         "enrich_sql": "SELECT body FROM comment "
-                      "WHERE article_id = %(pk)s AND tenant_id = %(tenant)s ORDER BY id",
+        "WHERE article_id = %(pk)s AND tenant_id = %(tenant)s ORDER BY id",
     },
     "product": {"fields": ["name", "description"], "pk": "id", "title_field": "name"},
     "comment": {"reembed_parent": {"table": "article", "fk": "article_id"}},
@@ -50,6 +53,8 @@ class Config:
     embed_openai_base_url: str = os.getenv("EMBED_OPENAI_BASE_URL", "")
     # M2:启动时校验配置字段确实存在于源表(改列/删列快速失败,不静默用错数据)
     schema_check: bool = os.getenv("SCHEMA_CHECK", "true").lower() == "true"
+    # M2:记录当前索引配置,供 rag 启动时校验 worker/rag embedding 与 chunk 参数一致
+    index_metadata_enabled: bool = os.getenv("INDEX_METADATA_ENABLED", "true").lower() == "true"
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "400"))
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "50"))
     # 单文档字符上限(防超大文本拖垮单条处理)

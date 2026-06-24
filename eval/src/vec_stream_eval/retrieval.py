@@ -5,6 +5,7 @@
   MRR      —— 每条 query 取「第一个命中期望文档的名次」的倒数 1/rank;
               整条 golden set 取这些倒数的平均(无命中记 0)。
 """
+
 from __future__ import annotations
 
 import json

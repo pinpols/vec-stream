@@ -1,5 +1,6 @@
 """源库反查(DESIGN.md §3.3d):收到变更后查一次 DB 拉关联数据。
 MVP 简化:源库 = 业务 PG;吞吐压力大再评估 Flink CDC(架构已解耦)。"""
+
 import psycopg
 from psycopg import sql as pgsql
 from psycopg.rows import dict_row
@@ -29,9 +30,7 @@ class SourceDB:
         with self._connection().cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
-        return "\n".join(
-            str(v) for row in rows for v in row.values() if v not in (None, "")
-        )
+        return "\n".join(str(v) for row in rows for v in row.values() if v not in (None, ""))
 
     def close(self) -> None:
         if self._conn is not None and not self._conn.closed:

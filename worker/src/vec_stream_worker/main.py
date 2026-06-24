@@ -12,6 +12,7 @@
 投递语义:至少一次 —— 处理成功后才 commit offset;处理失败退避重试,
 重试耗尽发 DLQ 后 commit(确定性 vector_id 保证重放幂等)。
 """
+
 import json
 import logging
 import signal
@@ -36,15 +37,15 @@ from .chunker import split_text
 from .config import Config
 from .embedder import make_embedder
 from .ids import text_hash
+from .index_metadata import metadata_from_cfg, metadata_name_from_cfg, upsert_index_metadata
+from .logging_setup import setup_logging
 from .metrics import CHUNKS_EMBEDDED, DLQ_SENT, EVENTS, SYNC_DELAY, start_metrics
 from .schema_check import check_schema
 from .sink import make_sink
 from .slot_monitor import start_monitor
 from .source_db import SourceDB
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-)
+setup_logging()
 log = logging.getLogger("worker")
 
 UPSERT_OPS = {"c", "r", "u"}
@@ -60,7 +61,12 @@ def build_source_text(after: dict, fields: list[str]) -> str:
 
 
 def process_event(
-    event: dict, table: str, cfg: Config, embedder, sink, source_db=None,
+    event: dict,
+    table: str,
+    cfg: Config,
+    embedder,
+    sink,
+    source_db=None,
     offset_ref: tuple[str, int, int] | None = None,
 ) -> str:
     """处理单条 CDC 事件,返回动作标签
@@ -91,7 +97,12 @@ def process_event(
             return "ignored"
         log.info("%s 变更 → 重建父文档 %s pk=%s", table, parent_table, fk)
         return process_event(
-            {"op": "u", "after": parent_row}, parent_table, cfg, embedder, sink, source_db,
+            {"op": "u", "after": parent_row},
+            parent_table,
+            cfg,
+            embedder,
+            sink,
+            source_db,
             offset_ref=offset_ref,
         )
 
@@ -128,8 +139,9 @@ def process_event(
             if extra:
                 source_text = f"{source_text}\n{extra}"
         if len(source_text) > cfg.max_doc_chars:
-            log.warning("%s pk=%s 文本过长 %d→%d chars 截断", table, pk,
-                        len(source_text), cfg.max_doc_chars)
+            log.warning(
+                "%s pk=%s 文本过长 %d→%d chars 截断", table, pk, len(source_text), cfg.max_doc_chars
+            )
             source_text = source_text[: cfg.max_doc_chars]
         new_hash = text_hash(source_text)
         metadata = {
@@ -196,8 +208,12 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
         except TRANSIENT_ERRORS as e:
             transient_attempts += 1
             wait = min(30.0, cfg.retry_backoff_s * (2 ** min(transient_attempts, 5)))
-            log.warning("transient infra error (attempt %d), retry in %.0fs: %s",
-                        transient_attempts, wait, e)
+            log.warning(
+                "transient infra error (attempt %d), retry in %.0fs: %s",
+                transient_attempts,
+                wait,
+                e,
+            )
             time.sleep(wait)
         except Exception as e:  # noqa: BLE001 —— 数据性错误,有限重试
             last_err = e
@@ -234,6 +250,8 @@ def run() -> None:
         check_schema(cfg.pg_dsn, cfg.tables)
     embedder = make_embedder(cfg)  # EMBED_SERVICE_URL 非空走 HTTP,否则进程内
     sink = make_sink(cfg)
+    if cfg.index_metadata_enabled:
+        upsert_index_metadata(cfg.pg_dsn, metadata_from_cfg(cfg), metadata_name_from_cfg(cfg))
     source_db = SourceDB(cfg.pg_dsn)
     log.info("vector backend: %s", cfg.vector_backend)
     start_metrics(cfg.metrics_port)
@@ -250,13 +268,13 @@ def run() -> None:
             "max.poll.interval.ms": 1800000,
         }
     )
-    dlq = Producer(
-        {"bootstrap.servers": cfg.kafka_bootstrap, "message.max.bytes": 5242880}
-    )
+    dlq = Producer({"bootstrap.servers": cfg.kafka_bootstrap, "message.max.bytes": 5242880})
     consumer.subscribe([cfg.kafka_topic_pattern])
     log.info(
         "consuming pattern %s from %s, tables=%s",
-        cfg.kafka_topic_pattern, cfg.kafka_bootstrap, list(cfg.tables),
+        cfg.kafka_topic_pattern,
+        cfg.kafka_bootstrap,
+        list(cfg.tables),
     )
 
     running = True
