@@ -1,0 +1,93 @@
+# 复用 batch infra overlay:vec-stream 复用 file-batch-system 的 Kafka + MinIO,
+# 但**保留自己的 Postgres(wal_level=logical)+ Debezium Connect**——边界最干净。
+# (batch PG 是 wal_level=replica,且 schema/角色/RLS/publication 边界全不同,不适合作 CDC 源库。)
+#
+# ── 前置 ──
+# 1) 起 batch 基础设施(在 file-batch-system 目录):
+#      docker compose up -d kafka minio
+# 2) 查 batch 网络真实名(项目名前缀,因人而异),设 BATCH_NETWORK:
+#      docker network ls | grep batch          # 形如 <project>_batch-network
+#      export BATCH_NETWORK=batch-local_batch-network   # 按实际改;默认 batch-platform_batch-network
+#
+# ── 起 vec(显式不列 vec 自己的 kafka/minio)──
+#   docker compose -f docker-compose.yml -f docker-compose.lake.yml -f docker-compose.reuse-batch.yml \
+#     up -d postgres connect iceberg-rest minio-init-batch \
+#           spark-lake-hudi-stream spark-lake-iceberg-stream
+#   bash debezium/register.sh        # 注册 Debezium connector(走 vec connect → batch kafka)
+#
+# 宿主机 worker 复用时:KAFKA_BOOTSTRAP=localhost:<batch KAFKA_HOST_PORT>(见 batch .env),
+# 走 batch-kafka 的 PLAINTEXT_HOST 广播监听器(容器内则用 kafka:29092)。
+#
+# ── 隔离说明 ──
+# - topic 命名空间不撞:batch 用 batch.*,vec 用 cdc.public.*;batch-kafka auto-create=on,
+#   cdc.public.* + Connect 内部 topic(_connect_*)自动建,无需预建。
+# - 桶不撞:batch 业务桶是 batch-dev/batch-prod,vec 用独立 warehouse 桶(minio-init-batch 自动建)。
+# - 凭据一致:batch-minio 根凭据 minioadmin/minioadmin123 与 vec 默认相同,无需改 AWS_*。
+
+networks:
+  # batch 那侧的外部网络;名字是 <COMPOSE_PROJECT_NAME>_batch-network,用 BATCH_NETWORK 覆盖。
+  batch-network:
+    external: true
+    name: ${BATCH_NETWORK:-batch-platform_batch-network}
+
+services:
+  # vec 自己的 Debezium Connect:Kafka 指向 batch(batch-network 上 kafka=batch-kafka),
+  # 数据源仍是 vec postgres。去掉对 vec kafka 的依赖(!override 只留 postgres)。
+  connect:
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+    networks:
+      - default
+      - batch-network
+
+  # Iceberg REST catalog:元数据后端走 vec postgres,数据 IO 走 batch-minio。
+  iceberg-rest:
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+    networks:
+      - default
+      - batch-network
+
+  # 在 batch-minio 上建 vec 专用 warehouse 桶(与 batch 业务桶隔离)。
+  minio-init-batch:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    container_name: vec-stream-minio-init-batch
+    networks:
+      - batch-network
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mc alias set b http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing b/warehouse
+        echo "vec warehouse bucket ready on batch-minio"
+
+  # spark-lake(批量/查询/维护):接 batch kafka + batch minio,去掉对 vec kafka/minio 依赖。
+  spark-lake:
+    depends_on: !reset null
+    networks:
+      - default
+      - batch-network
+
+  spark-lake-hudi-stream:
+    depends_on: !reset null
+    networks:
+      - default
+      - batch-network
+
+  # iceberg 流仍要等 iceberg-rest healthy(它在 vec 这侧);kafka/minio 依赖去掉。
+  spark-lake-iceberg-stream:
+    depends_on: !override
+      iceberg-rest:
+        condition: service_healthy
+    networks:
+      - default
+      - batch-network

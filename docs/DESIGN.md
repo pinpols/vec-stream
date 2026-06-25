@@ -24,7 +24,7 @@
 - 监听 MySQL / PostgreSQL 的行级变更(INSERT / UPDATE / DELETE)
 - 以 Kafka 为解耦总线,把同一份 CDC 流**扇出到多个独立 sink**
 - **向量 sink**:将「可检索文档」抽取、切分、向量化后写入向量库,并提供 RAG / 语义搜索 API(检索 → 重排 → 生成)
-- **lakehouse sink**:把原始行级变更物化为 Apache Iceberg 表(pyiceberg upsert/delete),供分析 / 数仓回填
+- **lakehouse sink**:统一 Spark 引擎(`spark-lake`)把行级变更物化为 Hudi / Iceberg 表(连续流 Structured Streaming,`df.write` upsert / `MERGE INTO`),供分析 / 数仓回填
 - 全程**幂等**:同一条变更重放结果一致;数据删除则下游同步失效
 
 ### 1.2 范围边界(不做什么)
@@ -35,7 +35,7 @@
 |---|---|
 | 单库 / 单数据源的 CDC → 多 sink 扇出 | 多源异构数据融合(多上游 join) |
 | 向量 sink + lakehouse(Iceberg)sink | 通用 ETL / 数据治理平台 |
-| 行级变更驱动的增量同步 | 自托管 Spark / Flink 集群(湖侧用 pyiceberg 轻量落地) |
+| 行级变更驱动的增量同步 | 自托管 Spark / Flink 集群(湖侧用 Spark local 模式轻量落地) |
 | 向量检索 + 基础 RAG 问答 | 复杂 Agent 编排 / 多轮对话记忆 |
 | 单表文档 + 简单跨表反查拼接 | 流式多表 JOIN(交给后续可选的 Flink CDC 阶段) |
 | 多租隔离(payload 过滤) | 行级权限 / 细粒度 ACL |

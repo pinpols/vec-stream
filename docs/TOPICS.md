@@ -30,7 +30,7 @@ Postgres ─ Debezium(vec-stream-pg, JSON)─ cdc.public.<table> ─┬→ 向�
 | sink | 消费方式 |
 |---|---|
 | 向量 worker | 消费组 `vec-stream-worker`(常驻) |
-| spark-lake(Hudi/Iceberg) | Spark 批量按需读全 topic(幂等重放,不依赖消费组 offset) |
+| spark-lake(Hudi/Iceberg) | **默认连续流**(Structured Streaming,checkpoint 在 `s3a://warehouse/_chk/<engine>-<arg>` 管 offset,~10-20s);**批量回填**模式按需读全 topic(幂等重放,不依赖消费组/ checkpoint) |
 
 ## 约定
 

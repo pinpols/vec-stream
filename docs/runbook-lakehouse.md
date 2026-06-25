@@ -83,3 +83,28 @@ $COMPOSE run --rm spark-lake query-iceberg article 1     # RESULT=<status|ABSENT
 - **崩溃自愈**:checkpoint 在 `s3a://warehouse/_chk/<engine>-<table>`;容器 `restart: unless-stopped`;`spark.streaming.stopGracefullyOnShutdown=true` 让 SIGTERM 时当前微批落完再退。配合 Hudi/Iceberg 主键合并 = 重放幂等。
 - **背压 / 有界恢复**:`MAX_OFFSETS_PER_TRIGGER`(留空=无界)限制单微批拉取量;`FAIL_ON_DATA_LOSS`(默认 `true`,丢 offset 即响亮失败)。两者经 `.env` 透传(见 `.env.example`)。
 - **凭据安全**:S3/MinIO secret **不进** spark-submit 命令行 / Spark UI Environment 页 —— Hadoop 走 `EnvironmentVariableCredentialsProvider`、Iceberg S3FileIO 走默认凭据链,均从 `AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY` 环境变量读。生产务必改掉 `.env` 里的 MinIO 默认弱口令。
+
+## 复用 file-batch-system 的 Kafka / MinIO(本机资源紧张时)
+
+默认 vec-stream 自包含(一条命令跑通)。本机紧张时用 `docker-compose.reuse-batch.yml` overlay
+**只复用 batch 的 Kafka + MinIO**,vec 仍保留自己的 Postgres(`wal_level=logical`)+ Debezium Connect
+(batch PG 是 `wal_level=replica`、schema/角色/RLS 边界不同,不适合作 CDC 源库)。
+
+```bash
+# 1) 起 batch 基础设施(在 file-batch-system 目录)
+docker compose up -d kafka minio
+# 2) 查 batch 网络真实名(项目名前缀,因人而异)
+docker network ls | grep batch          # 形如 <project>_batch-network
+export BATCH_NETWORK=batch-local_batch-network    # 按实际改
+# 3) 起 vec 复用栈(显式不列 vec 自己的 kafka/minio)
+docker compose -f docker-compose.yml -f docker-compose.lake.yml -f docker-compose.reuse-batch.yml \
+  up -d postgres connect iceberg-rest minio-init-batch spark-lake-hudi-stream spark-lake-iceberg-stream
+bash debezium/register.sh
+```
+
+- **边界干净**:topic 不撞(batch `batch.*` / vec `cdc.public.*`,auto-create=on 自动建);桶不撞
+  (batch `batch-dev` / vec 独立 `warehouse`,`minio-init-batch` 自动建);凭据一致(均 minioadmin)。
+- **已实测**:vec Postgres+Debezium → batch-kafka → spark-lake-hudi-stream → Hudi(batch-minio)
+  端到端 `RESULT=published`,且 vec 自己的 kafka/minio 全程不启动。
+- 宿主机 worker 复用:`KAFKA_BOOTSTRAP=localhost:<batch KAFKA_HOST_PORT>`(走 batch-kafka 的
+  PLAINTEXT_HOST 监听器)。overlay 头部注释有完整说明。
