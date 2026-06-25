@@ -1,11 +1,19 @@
-# CDC → Vector → RAG 实时同步系统 · 设计文档
+# CDC 实时多 sink 分发底座(向量 + lakehouse) · 设计文档
 
 > 工作代号:**cdc-vector-rag**
-> 版本:v0.1(初稿) · 日期:2026-06-09
-> 状态:设计中,准备进入 MVP 搭建
+> 版本:v0.2 · 初稿日期:2026-06-09
+> 状态:向量主链路已可跑;**Hudi + Iceberg 双 lakehouse sink 统一到 Spark(连续流 Structured Streaming),本地端到端验证通过**(统一 cdc.* JSON,insert/update/delete 全绿)
 
-把业务数据库的变更(CDC)**实时**同步进向量数据库,作为 RAG / 语义检索的实时数据底座。
-区别于「定时全量重建索引」的传统做法:数据一改,向量秒级更新,删除即失效。
+以业务数据库的变更(CDC)为单一事实源,经 Kafka 解耦后**实时扇出到多个下游 sink**(统一消费 `cdc.public.*` JSON,见 `docs/TOPICS.md`):
+- **向量 sink**(本项目核心):构建可检索文档 → 向量化 → 写向量库,作为 RAG / 语义检索的实时数据底座;
+- **Lakehouse sink**:统一 Spark 引擎(`spark-lake`)写两种主流湖表——**Hudi**(Spark 主场,`df.write.format("hudi")` upsert)与 **Iceberg**(Spark v2 `MERGE INTO`)。
+  > 选型:湖腿都收敛到 **Spark**(各自主流引擎、开源友好、不背 Flink 集群/连接器坑)。**连续流(Structured Streaming,~10-20s)默认**,
+  > 批量(幂等读全 topic)做回填;共用同一段解析+写入。两条湖腿与向量腿共用同一份 cdc.* 流。
+  > 延迟分层:向量腿连续消费亚秒~秒级(核心实时),湖腿微批十几秒(准实时)。真·亚秒需 Flink(已退役)。
+  > 历史尝试(HoodieStreamer / Flink→Iceberg/Hudi / pyiceberg)已退役,见 git 历史。
+
+共同的差异化:区别于「定时全量重建」的传统做法——数据一改,下游秒级更新,删除即失效;
+各 sink 独立消费、互不阻塞,任一条腿故障不影响其他。
 
 ---
 
@@ -14,9 +22,10 @@
 ### 1.1 目标(做什么)
 
 - 监听 MySQL / PostgreSQL 的行级变更(INSERT / UPDATE / DELETE)
-- 将「可检索文档」抽取、切分、向量化后写入向量库
-- 提供 RAG / 语义搜索 API(检索 → 重排 → 生成)
-- 全程**幂等**:同一条变更重放结果一致;数据删除则向量同步失效
+- 以 Kafka 为解耦总线,把同一份 CDC 流**扇出到多个独立 sink**
+- **向量 sink**:将「可检索文档」抽取、切分、向量化后写入向量库,并提供 RAG / 语义搜索 API(检索 → 重排 → 生成)
+- **lakehouse sink**:把原始行级变更物化为 Apache Iceberg 表(pyiceberg upsert/delete),供分析 / 数仓回填
+- 全程**幂等**:同一条变更重放结果一致;数据删除则下游同步失效
 
 ### 1.2 范围边界(不做什么)
 
@@ -24,13 +33,14 @@
 
 | ✅ 做 | ❌ 不做 |
 |---|---|
-| 单库 / 单数据源的 CDC → 向量同步 | 多源异构数据融合 / 数据湖 |
-| 行级变更驱动的增量同步 | 通用 ETL / 数据治理平台 |
+| 单库 / 单数据源的 CDC → 多 sink 扇出 | 多源异构数据融合(多上游 join) |
+| 向量 sink + lakehouse(Iceberg)sink | 通用 ETL / 数据治理平台 |
+| 行级变更驱动的增量同步 | 自托管 Spark / Flink 集群(湖侧用 pyiceberg 轻量落地) |
 | 向量检索 + 基础 RAG 问答 | 复杂 Agent 编排 / 多轮对话记忆 |
 | 单表文档 + 简单跨表反查拼接 | 流式多表 JOIN(交给后续可选的 Flink CDC 阶段) |
 | 多租隔离(payload 过滤) | 行级权限 / 细粒度 ACL |
 
-> **学习目标定位**:本项目核心是练 **CDC(Debezium/WAL)+ Embedding + 向量检索 + RAG** 这套新技术栈,不是再造一个分布式批处理系统。凡是会把项目拖向「重运维平台」的需求(Flink 集群、K8s 调度、多源融合),一律推迟或砍掉。
+> **定位**:本项目是一个 **CDC 实时多 sink 分发底座**——以「Kafka 为单一事实源、多个下游各自消费」为骨架,当前落地两条 sink:向量(RAG 底座)与 Hudi lakehouse(分析视图)。核心练的是 **CDC(Debezium/WAL)+ Embedding + 向量检索 + RAG + lakehouse 物化** 这套技术栈,**不是**再造分布式批处理 / 数据治理平台。凡是会把项目拖向「重运维平台」的需求(自托管 Spark/Flink 集群、K8s 调度、多源融合),一律推迟或限定在最小演示范围(如 Hudi 仅 Spark local 模式)。
 
 ---
 
@@ -49,24 +59,26 @@
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│ Kafka CDC Topic │  每表一个 topic:cdc.<db>.<table>
+│ Kafka CDC Topic │  统一:每表一个 topic cdc.public.<table>(JSON,schemas.enable=false)
+│ cdc.public.*    │  单 Debezium connector / 单复制槽,详见 docs/TOPICS.md
 └────────┬────────┘
-         ▼
-┌──────────────────────────────────────────────┐
-│ Vector Sync Worker(本项目核心)              │
-│  1. 变更分流:c/r→upsert  u→re-embed  d→delete│
-│  2. 文档构建:字段拼接 / 跨表反查 / 文本抽取   │
-│  3. 源文本 hash 比对 → 未变则跳过 embedding   │
-│  4. Chunk 切分                                │
-│  5. 确定性向量 ID(由 PK 派生)               │
-│  6. 批量 Embedding                            │
-│  7. upsert / delete 向量库                    │
-└────────┬─────────────────────────────────────┘
-         ▼
-┌─────────────────┐
-│ 向量数据库       │  MVP: pgvector → 进阶: Qdrant
-│                 │  payload: tenant_id + 业务过滤字段
-└────────┬────────┘
+         │  扇出:同一份 cdc.public.* 流,各 sink 独立消费、互不阻塞
+         ├──────────────────────┬──────────────────────┐
+         ▼                      ▼                      ▼
+┌──────────────────────┐  ┌──────────────────────────────────────┐
+│ ① Vector Sync Worker │  │ ②③ spark-lake(统一 Spark 引擎)      │
+│  c/r→upsert          │  │  hudi   : df.write.format("hudi") upsert│
+│  u→re-embed d→delete │  │           d→_hoodie_is_deleted          │
+│  文档构建/hash 去重  │  │  iceberg: MERGE INTO(v2)               │
+│  确定性向量 ID       │  │           d→DELETE 其余 UPSERT          │
+│  批量 Embedding      │  │  解析 envelope,按 PK 合并(批量幂等)  │
+│  upsert/delete 向量库│  └───────┬──────────────────┬─────────────┘
+└────────┬─────────────┘          ▼                  ▼
+         ▼                  ┌──────────────┐  ┌──────────────┐
+┌─────────────────┐         │ Hudi 表(MOR)│  │ Iceberg 表   │
+│ 向量数据库       │        │ MinIO/s3a    │  │ REST+MinIO   │
+│ pgvector/Qdrant │         │ 分析/数仓     │  │ 分析/数仓     │
+└────────┬────────┘         └──────────────┘  └──────────────┘
          ▼
 ┌─────────────────┐
 │ RAG 服务         │  检索 → (可选)rerank → OpenAI 兼容 API 生成

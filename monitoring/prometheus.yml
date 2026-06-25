@@ -22,6 +22,39 @@ scrape_configs:
         labels:
           service: vec-stream-worker
 
+  # 湖腿 Spark 连续流 driver(批3 可观测):Spark 原生 PrometheusServlet,
+  # /metrics/prometheus 暴露流指标(输入/处理速率、批时长、积压)+ JVM/executor。
+  # 仅在起了 docker-compose.lake.yml 的 *-stream 服务时有 target(宿主 4040/4041)。
+  - job_name: spark-lake-hudi-stream
+    metrics_path: /metrics/prometheus/
+    static_configs:
+      - targets:
+          - host.docker.internal:4040
+        labels:
+          service: spark-lake-hudi-stream
+  - job_name: spark-lake-iceberg-stream
+    metrics_path: /metrics/prometheus/
+    static_configs:
+      - targets:
+          - host.docker.internal:4041
+        labels:
+          service: spark-lake-iceberg-stream
+
+  # Paimon(Flink)连续流(批3 可观测):Flink PrometheusReporter,9249/metrics。
+  # 仅在起了 docker-compose.paimon.yml 时有 target(宿主 9249 jobmanager / 9250 taskmanager)。
+  - job_name: flink-paimon-jobmanager
+    static_configs:
+      - targets:
+          - host.docker.internal:9249
+        labels:
+          service: flink-paimon-jobmanager
+  - job_name: flink-paimon-taskmanager
+    static_configs:
+      - targets:
+          - host.docker.internal:9250
+        labels:
+          service: flink-paimon-taskmanager
+
   # Prometheus 自监控
   - job_name: prometheus
     static_configs:

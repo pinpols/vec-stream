@@ -1,0 +1,57 @@
+# Flink → Paimon 样板 overlay(Paimon 原生引擎,参考级)。
+#
+#   docker compose -f docker-compose.yml -f docker-compose.lake.yml -f docker-compose.paimon.yml \
+#     up -d minio minio-init flink-paimon-jobmanager flink-paimon-taskmanager
+#   docker compose ... run --rm flink-paimon-sql            # 提交流式作业
+services:
+  flink-paimon-jobmanager:
+    build:
+      context: ./flink-paimon
+    image: vec-stream-flink-paimon
+    container_name: vec-stream-flink-paimon-jobmanager
+    command: jobmanager
+    # 8086 = Flink UI;9249 = PrometheusReporter(批3 可观测,Prometheus 抓这里)
+    ports:
+      - "8086:8081"
+      - "9249:9249"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-paimon-jobmanager
+        execution.checkpointing.interval: 10s
+        state.backend.type: hashmap
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  flink-paimon-taskmanager:
+    image: vec-stream-flink-paimon
+    container_name: vec-stream-flink-paimon-taskmanager
+    command: taskmanager
+    # 宿主 9250 → 容器 9249(jobmanager 已占宿主 9249);TaskManager 指标(吞吐/反压/checkpoint)
+    ports:
+      - "9250:9249"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-paimon-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
+    depends_on:
+      - flink-paimon-jobmanager
+
+  flink-paimon-sql:
+    image: vec-stream-flink-paimon
+    container_name: vec-stream-flink-paimon-sql
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        sed -i 's/^  address: 0.0.0.0/  address: flink-paimon-jobmanager/' /opt/flink/conf/config.yaml
+        exec /opt/flink/bin/sql-client.sh -f "/opt/sql/${PAIMON_SQL:-cdc_to_paimon.sql}"
+    volumes:
+      - ./flink-paimon/sql:/opt/sql:ro
+    depends_on:
+      - flink-paimon-jobmanager
+      - flink-paimon-taskmanager

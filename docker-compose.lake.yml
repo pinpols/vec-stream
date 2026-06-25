@@ -1,0 +1,162 @@
+# Lakehouse overlay:统一 Spark 引擎写 Hudi + Iceberg(各自主流引擎)。
+#
+# 起基础设施:
+#   docker compose -f docker-compose.yml -f docker-compose.lake.yml up -d \
+#     minio minio-init iceberg-rest
+# 写入(按需,批量幂等):
+#   docker compose -f docker-compose.yml -f docker-compose.lake.yml run --rm spark-lake hudi article
+#   docker compose -f docker-compose.yml -f docker-compose.lake.yml run --rm spark-lake iceberg article
+# 查询:
+#   ... run --rm spark-lake query-hudi article [id]
+#   ... run --rm spark-lake query-iceberg article [id]
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: vec-stream-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # warehouse 桶(Hudi 表 hudi/<t>、Iceberg 表元数据/数据都在这)
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    container_name: vec-stream-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/warehouse
+        echo "warehouse bucket ready"
+
+  # Iceberg REST catalog(元数据);Postgres JDBC 后端(默认 SQLite 并发不稳,
+  # Connect sink 高并发 commit 会卡;Postgres 才稳。镜像加了 pg 驱动,见 iceberg-rest/Dockerfile)。
+  iceberg-rest:
+    build:
+      context: ./iceberg-rest
+    image: vec-stream-iceberg-rest
+    container_name: vec-stream-iceberg-rest
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8181:8181"
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      AWS_REGION: us-east-1
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      CATALOG_URI: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-vec_stream}
+      CATALOG_JDBC_USER: ${POSTGRES_USER:-vec_stream}
+      CATALOG_JDBC_PASSWORD: ${POSTGRES_PASSWORD:-change-me-superuser}
+      CATALOG_JDBC_SCHEMA__VERSION: V1
+      CATALOG_JDBC_INIT__CATALOG__TABLES: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8181/v1/config >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+
+  # 统一 Spark lakehouse 引擎(按需运行,非常驻)。脚本走挂载,改脚本免重建。
+  spark-lake:
+    build:
+      context: ./spark-lake
+    image: vec-stream-spark-lake
+    volumes:
+      - ./spark-lake:/opt/spark-lake:ro
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      HUDI_S3_ENDPOINT: http://minio:9000
+      HUDI_BUCKET: warehouse
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      AWS_REGION: us-east-1
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # 连续流(Structured Streaming):常驻消费 cdc.public.article → Hudi(按需 up -d 启)
+  spark-lake-hudi-stream:
+    image: vec-stream-spark-lake
+    container_name: vec-stream-spark-lake-hudi-stream
+    command: ["hudi-stream", "all"]
+    # 4040 = Spark driver UI + /metrics/prometheus(批3 可观测,Prometheus 抓这里)
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./spark-lake:/opt/spark-lake:ro
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      HUDI_S3_ENDPOINT: http://minio:9000
+      HUDI_BUCKET: warehouse
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      AWS_REGION: us-east-1
+      TRIGGER_SECONDS: ${TRIGGER_SECONDS:-10}
+      FAIL_ON_DATA_LOSS: ${FAIL_ON_DATA_LOSS:-true}
+      MAX_OFFSETS_PER_TRIGGER: ${MAX_OFFSETS_PER_TRIGGER:-}
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # 连续流:常驻消费 cdc.public.article → Iceberg(按需 up -d 启)
+  spark-lake-iceberg-stream:
+    image: vec-stream-spark-lake
+    container_name: vec-stream-spark-lake-iceberg-stream
+    command: ["iceberg-stream", "all"]
+    # 宿主 4041 → 容器 4040(hudi-stream 已占宿主 4040);/metrics/prometheus 同上
+    ports:
+      - "4041:4040"
+    volumes:
+      - ./spark-lake:/opt/spark-lake:ro
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      HUDI_S3_ENDPOINT: http://minio:9000
+      HUDI_BUCKET: warehouse
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      AWS_REGION: us-east-1
+      TRIGGER_SECONDS: ${TRIGGER_SECONDS:-10}
+      FAIL_ON_DATA_LOSS: ${FAIL_ON_DATA_LOSS:-true}
+      MAX_OFFSETS_PER_TRIGGER: ${MAX_OFFSETS_PER_TRIGGER:-}
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+
+volumes:
+  minio_data:

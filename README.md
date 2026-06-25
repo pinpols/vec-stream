@@ -1,18 +1,22 @@
 # vec_stream
 
-把业务数据库的变更(CDC)**实时**同步进向量数据库,作为 RAG / 语义检索的实时数据底座。
+**CDC 实时多 sink 分发底座(向量 + lakehouse)**:以业务库变更(CDC)为单一事实源,经 Kafka 解耦后**实时扇出到多个下游**——向量库(RAG / 语义检索底座)与 lakehouse(Hudi / Iceberg 分析视图)。
 
 ```
-MySQL / PostgreSQL → Debezium → Kafka → Vector Sync Worker → 向量库(pgvector/Qdrant) → RAG 服务
+                                  ┌→ Vector Sync Worker → 向量库(pgvector/Qdrant) → RAG 服务
+MySQL / PostgreSQL → Debezium → Kafka ─┼→ spark-lake hudi    → Hudi 表
+                                  └→ spark-lake iceberg → Iceberg 表(分析 / 数仓回填)
 ```
 
-数据一改,向量秒级更新;数据删除,向量同步失效。区别于「定时全量重建索引」的传统做法。
+数据一改,下游秒级更新;数据删除,下游同步失效——区别于「定时全量重建」的传统做法。各 sink 独立消费、互不阻塞。
 
 ## 文档
 
 - 设计文档:[`docs/DESIGN.md`](docs/DESIGN.md) — 架构、核心难点、选型、分阶段路线图
 - 企业级演进规划:[`docs/ENTERPRISE.md`](docs/ENTERPRISE.md) — 7 大领域差距、该做/按需/越界判定、M1–M3 路线
-- Hudi 旁路设计:[`docs/HUDI_LAKE_DESIGN.md`](docs/HUDI_LAKE_DESIGN.md) — CDC → Hudi lakehouse 分析视图的边界与落地路线
+- Topic 规划:[`docs/TOPICS.md`](docs/TOPICS.md) — 统一 CDC 多 sink(单连接器/单复制槽,三 sink 共用 cdc.public.* JSON)
+- Lakehouse 腿:[`spark-lake/`](spark-lake/) + [`docs/runbook-lakehouse.md`](docs/runbook-lakehouse.md) — 统一 Spark 引擎写 **Hudi 和 Iceberg**(各自主流引擎,连续流 Structured Streaming + 批量回填),已验证
+- Flink → Paimon(参考样板):[`flink-paimon/`](flink-paimon/) + [`docs/runbook-flink-paimon.md`](docs/runbook-flink-paimon.md) — Paimon 原生引擎(Flink),streaming-native CDC 入湖演示,已验证
 
 ## 快速开始(基础设施)
 
@@ -122,6 +126,14 @@ curl -s -X POST http://localhost:8000/search \
 - **冒烟验证**:基础设施、connector、worker、rag 都启动后,运行
   `bash scripts/smoke.sh`;脚本会检查 `/healthz`、connector 状态、插入一条
   smoke 文章并用带 API key 的 `/search` 验证召回。
+- **Lakehouse 旁路**:需要分析/数仓视图时,启动 lake overlay(统一 Spark 引擎写
+  Hudi + Iceberg,各自主流引擎,消费同一 `cdc.public.*` JSON 流,不影响向量链路):
+  `docker compose -f docker-compose.yml -f docker-compose.lake.yml up -d minio minio-init iceberg-rest`。
+  连续流:`up -d spark-lake-hudi-stream spark-lake-iceberg-stream`;
+  按需批量回填 / 查询 / Iceberg 维护见 [`docs/runbook-lakehouse.md`](docs/runbook-lakehouse.md)。
+  > Kafka Connect Iceberg Sink 评估过但**不采用**:其基于控制 topic 的两阶段提交协议与
+  > broker group 协调强耦合,本环境 worker 控制面消费者持续 rebalance、提交 0 表,落地摩擦高;
+  > Iceberg 走 Spark 原生 commit 更稳。
 
 ## 路线图
 

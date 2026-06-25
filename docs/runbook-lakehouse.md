@@ -1,0 +1,85 @@
+# Lakehouse 腿 · 运行手册(统一 Spark 引擎)
+
+两条湖腿统一到 **Spark**(各自主流引擎):Spark→Hudi(Hudi 主场)、Spark→Iceberg(一等集成)。
+与向量腿共用同一份 `cdc.public.*` JSON 流(单 connector / 单复制槽,见 `docs/TOPICS.md`)。
+
+> **两种运行模式**:① **连续流**(Spark Structured Streaming,常驻,~10-20s 延迟)——默认日常用;
+> ② **批量**(run 一次读全 topic,幂等)——回填 / 一次性。两模式共用同一段解析+写入逻辑。
+> 延迟:trigger 默认 10s(`TRIGGER_SECONDS` 可调),端到端 ~10-20s;向量腿是连续消费,亚秒~秒级(更快,by-design)。
+
+## 组成
+
+| 组件 | 作用 |
+|---|---|
+| cdc connector(`vec-stream-pg`,`debezium/register.sh`)| 产 `cdc.public.*` JSON(三 sink 共用)|
+| `iceberg-rest`(apache/iceberg-rest-fixture)| Iceberg REST catalog |
+| MinIO `warehouse` 桶 | Hudi `hudi/<t>` + Iceberg 数据/元数据 |
+| `spark-lake`(`spark-lake/`)| 一个 Spark 镜像写两种格式:`cdc_to_hudi.py` / `cdc_to_iceberg.py`(MERGE INTO)|
+
+脚本走挂载(compose volume),改脚本免重建镜像。
+
+## 一键验证
+
+```bash
+bash scripts/hudi-smoke.sh       # 批量:insert/update/delete → Hudi
+bash scripts/iceberg-smoke.sh    # 批量:insert/update/delete → Iceberg
+
+# 连续流:先起常驻流,再验"自动捡变更"(不手动跑写作业)
+docker compose -f docker-compose.yml -f docker-compose.lake.yml up -d \
+  spark-lake-hudi-stream spark-lake-iceberg-stream
+bash scripts/stream-smoke.sh
+```
+
+## 手动跑
+
+```bash
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.lake.yml"
+$COMPOSE up -d postgres kafka connect minio minio-init iceberg-rest
+./debezium/register.sh                          # cdc connector(已存在则跳过)
+$COMPOSE build spark-lake
+
+# 连续流(常驻,默认日常;多表 all = article/product/comment 一作业全覆盖)
+$COMPOSE up -d spark-lake-hudi-stream spark-lake-iceberg-stream
+# 批量(回填 / 一次性,幂等);<table> = all | article | product | comment
+$COMPOSE run --rm spark-lake hudi all
+$COMPOSE run --rm spark-lake iceberg all
+# 查询(单表 + 可选 id)
+$COMPOSE run --rm spark-lake query-hudi product          # COUNT=
+$COMPOSE run --rm spark-lake query-iceberg article 1     # RESULT=<status|ABSENT>
+```
+
+## 关键设计
+
+- **Hudi**(`cdc_to_hudi.py`):扁平→`df.write.format("hudi")` upsert;删除用 `_hoodie_is_deleted`;MOR + GLOBAL_SIMPLE 索引;recordkey=id、precombine=ts_ms、partition=tenant_id。**删除依赖 `REPLICA IDENTITY FULL`**(before 完整;smoke 自动设)。
+- **Iceberg**(`cdc_to_iceberg.py`):每 id 取最新变更→`MERGE INTO`(`op=d` DELETE / 其余 UPSERT);Spark Iceberg v2,REST catalog + S3FileIO。
+- **批量 / 流共用逻辑**:`STREAM_MODE=true` 走 `readStream`+`foreachBatch`(checkpoint 在 `s3a://warehouse/_chk/<engine>-<table>`),否则批量读全 topic;每微批走同一段解析+写入。
+- **幂等**:都按主键合并、重放结果一致。
+
+## 表维护(后台 table service · 生产必备)
+
+各引擎机制不同:
+
+- **Iceberg**(无 inline,必须定期显式跑):`run --rm spark-lake maintain-iceberg <all|table>` —— `rewrite_data_files`(小文件合并)+ `rewrite_manifests` + `expire_snapshots`(保留最近 5,生产按 time-travel 窗口设 older_than)。生产用 cron 定时跑。实测:article 76 数据文件→1、76 快照→5、数据不丢。
+- **Hudi**(inline 自维护):MOR 每 5 delta commit 合并 log→base;cleaner `KEEP_LATEST_COMMITS` 留最近 10(`cdc_to_hudi.py` 已配),写时自动跑。
+- **Paimon**(流内自维护):snapshot 保留 `num-retained.max=20`/`time-retained=1h` + `full-compaction.delta-commits=5`(`cdc_to_paimon.sql` 表 DDL 已配)。
+
+## 实时性 / 分层
+
+- **连续流已实现**(默认);延迟 ~10-20s(trigger 10s 可调 `TRIGGER_SECONDS`)。
+- 向量腿连续逐条消费、亚秒~秒级(更快,by-design 分层:核心实时、湖准实时)。真·亚秒需 Flink(已退役)。
+- 选型对比见 `docs/DESIGN.md`。
+
+## 可观测(批3 · Prometheus)
+
+连续流用 Spark 原生 **PrometheusServlet**(无额外 jar),driver UI 暴露指标;Prometheus 直接抓:
+
+- Hudi 流:`http://localhost:4040/metrics/prometheus/`;Iceberg 流:`http://localhost:4041/metrics/prometheus/`
+- 关键流指标(`spark_lake` 命名空间):`*_inputRate_total`(输入速率)、`*_processingRate_total`(处理速率)、`*_latency`(批延迟)、`*_eventTime_watermark`、`*_states_rowsTotal`;另有 JVM/BlockManager/executor 指标。
+- 接入:`docker compose -f docker-compose.monitoring.yml up -d`(已含 `spark-lake-*-stream` 与 `flink-paimon-*` 抓取 job);Prometheus `/targets` 可见。
+- Paimon(Flink)用 Flink 自带 **PrometheusReporter**(镜像已从 `opt/` 挪到 `lib/`),jobmanager `:9249` / taskmanager `:9250`。
+
+## 可靠性 + 配置/安全(批4)
+
+- **崩溃自愈**:checkpoint 在 `s3a://warehouse/_chk/<engine>-<table>`;容器 `restart: unless-stopped`;`spark.streaming.stopGracefullyOnShutdown=true` 让 SIGTERM 时当前微批落完再退。配合 Hudi/Iceberg 主键合并 = 重放幂等。
+- **背压 / 有界恢复**:`MAX_OFFSETS_PER_TRIGGER`(留空=无界)限制单微批拉取量;`FAIL_ON_DATA_LOSS`(默认 `true`,丢 offset 即响亮失败)。两者经 `.env` 透传(见 `.env.example`)。
+- **凭据安全**:S3/MinIO secret **不进** spark-submit 命令行 / Spark UI Environment 页 —— Hadoop 走 `EnvironmentVariableCredentialsProvider`、Iceberg S3FileIO 走默认凭据链,均从 `AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY` 环境变量读。生产务必改掉 `.env` 里的 MinIO 默认弱口令。

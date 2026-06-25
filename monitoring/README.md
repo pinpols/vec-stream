@@ -39,6 +39,19 @@ macOS/Windows Docker Desktop 内置该主机名)。
 | `vec_stream_events_total` | Counter | CDC 事件处理数(label:table/action) |
 | `vec_stream_chunks_embedded_total` | Counter | 嵌入的 chunk 数(贵调用) |
 
+## 湖腿可观测(批3 · 仅起 lake/paimon overlay 时有 target)
+
+`prometheus.yml` 另含 4 个湖腿抓取 job(无 target 时在 `/targets` 显示 down,属正常):
+
+| job | 来源 | 端点 | 关键指标 |
+| --- | --- | --- | --- |
+| `spark-lake-hudi-stream` | Spark PrometheusServlet | `host.docker.internal:4040/metrics/prometheus/` | `spark_lake_*_inputRate_total` / `processingRate_total` / `latency` / `eventTime_watermark` |
+| `spark-lake-iceberg-stream` | 同上(宿主 4041) | `…:4041/metrics/prometheus/` | 同上 |
+| `flink-paimon-jobmanager` | Flink PrometheusReporter | `…:9249` | checkpoint / 算子吞吐 / 反压 |
+| `flink-paimon-taskmanager` | 同上(宿主 9250) | `…:9250` | task 吞吐 / busyTime / backPressure |
+
+详见 `docs/runbook-lakehouse.md` 的「可观测 / 可靠性 + 配置/安全」节。
+
 ## SLO 与告警
 
 | 告警 | SLO | PromQL(摘要) | 阈值 | for | severity |
