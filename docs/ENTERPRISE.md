@@ -117,7 +117,7 @@
 | DLQ 自动重投 + 次数上限 + 归档 | 手动重投,无上限 | 定时重投 + max-retry + 死信归档表 | ✅ 该做 | M2 |
 | 告警规则 + SLO | 指标已暴露,无告警 | Prometheus 告警规则(延迟 p99 / DLQ 积压) | ✅ 该做 | M2 |
 | Grafana 大盘 | 无 | 同步延迟/跳过率/DLQ/slot 看板 | 🟡 按需 | M2 |
-| 分布式追踪 OTel | 无 | trace 贯穿 CDC→向量→RAG | 🟡 按需 | M3 |
+| 分布式追踪 OTel | ✅ **已实现**(2026-06-25) | OTEL_ENABLED 开关·可选 extra·OTLP→Jaeger;worker/rag/embed-service 自动+手动 span,httpx 注入 traceparent 跨服务串联。live 验证 Jaeger 收到 8-span trace | ✅ 已做 | M3 |
 | 结构化日志 → ELK | 文本日志 | JSON 日志 + 采集 | 🟡 按需 | M3 |
 
 **关键判断**:指标的"采集端"已经做完(Prometheus 格式),缺的是"消费端"。
