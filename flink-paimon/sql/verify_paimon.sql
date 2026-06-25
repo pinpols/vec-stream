@@ -4,7 +4,7 @@ SET 'sql-client.execution.result-mode' = 'TABLEAU';
 
 CREATE CATALOG paimon WITH (
   'type'='paimon','warehouse'='s3://warehouse/paimon',
-  's3.endpoint'='http://minio:9000','s3.access-key'='minioadmin','s3.secret-key'='minioadmin123',
+  's3.endpoint'='http://minio:9000','s3.access-key'='__S3_ACCESS_KEY__','s3.secret-key'='__S3_SECRET_KEY__',
   's3.path.style.access'='true');
 
 SELECT 'article' AS tbl, COUNT(*) AS cnt FROM paimon.lake.article

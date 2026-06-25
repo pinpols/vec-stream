@@ -13,6 +13,6 @@ RUN set -eux; cd /opt/flink/lib; \
     curl -fL --retry 6 --retry-delay 3 --retry-all-errors "${M2}/org/apache/flink/flink-sql-connector-kafka/${KAFKA_CONNECTOR}/flink-sql-connector-kafka-${KAFKA_CONNECTOR}.jar" -o flink-sql-connector-kafka.jar; \
     # Paimon catalog 框架要 un-shaded org.apache.hadoop.conf.Configuration(paimon-s3 只带 S3,不带它)
     curl -fL --retry 6 --retry-delay 3 --retry-all-errors "${M2}/org/apache/flink/flink-shaded-hadoop-2-uber/2.8.3-10.0/flink-shaded-hadoop-2-uber-2.8.3-10.0.jar" -o flink-shaded-hadoop.jar
-# 可观测(批3):Flink 自带 PrometheusReporter(随发行版在 opt/),挪到 lib 即生效,无需下载。
-RUN cp /opt/flink/opt/flink-metrics-prometheus-*.jar /opt/flink/lib/
+# 可观测(批3):PrometheusReporter 在 1.19.3 镜像里已预装为插件
+# (/opt/flink/plugins/metrics-prometheus/),无需 COPY;只要 FLINK_PROPERTIES 配 factory.class 即加载。
 USER flink

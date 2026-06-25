@@ -28,7 +28,7 @@ CREATE TABLE src_comment (
 -- Paimon catalog(文件系统 catalog,warehouse 在 MinIO)
 CREATE CATALOG paimon WITH (
   'type'='paimon','warehouse'='s3://warehouse/paimon',
-  's3.endpoint'='http://minio:9000','s3.access-key'='minioadmin','s3.secret-key'='minioadmin123',
+  's3.endpoint'='http://minio:9000','s3.access-key'='__S3_ACCESS_KEY__','s3.secret-key'='__S3_SECRET_KEY__',
   's3.path.style.access'='true');
 
 CREATE DATABASE IF NOT EXISTS paimon.lake;
