@@ -8,11 +8,11 @@ ARG M2=https://repo1.maven.org/maven2
 
 USER root
 RUN set -eux; cd /opt/flink/lib; \
-    curl -fL --retry 6 --retry-delay 3 --retry-all-errors "${M2}/org/apache/paimon/paimon-flink-1.19/${PAIMON_VERSION}/paimon-flink-1.19-${PAIMON_VERSION}.jar" -o paimon-flink.jar; \
-    curl -fL --retry 6 --retry-delay 3 --retry-all-errors "${M2}/org/apache/paimon/paimon-s3/${PAIMON_VERSION}/paimon-s3-${PAIMON_VERSION}.jar" -o paimon-s3.jar; \
-    curl -fL --retry 6 --retry-delay 3 --retry-all-errors "${M2}/org/apache/flink/flink-sql-connector-kafka/${KAFKA_CONNECTOR}/flink-sql-connector-kafka-${KAFKA_CONNECTOR}.jar" -o flink-sql-connector-kafka.jar; \
+    curl -fL --retry 6 --retry-delay 3 --retry-connrefused --retry-all-errors "${M2}/org/apache/paimon/paimon-flink-1.19/${PAIMON_VERSION}/paimon-flink-1.19-${PAIMON_VERSION}.jar" -o paimon-flink.jar; \
+    curl -fL --retry 6 --retry-delay 3 --retry-connrefused --retry-all-errors "${M2}/org/apache/paimon/paimon-s3/${PAIMON_VERSION}/paimon-s3-${PAIMON_VERSION}.jar" -o paimon-s3.jar; \
+    curl -fL --retry 6 --retry-delay 3 --retry-connrefused --retry-all-errors "${M2}/org/apache/flink/flink-sql-connector-kafka/${KAFKA_CONNECTOR}/flink-sql-connector-kafka-${KAFKA_CONNECTOR}.jar" -o flink-sql-connector-kafka.jar; \
     # Paimon catalog 框架要 un-shaded org.apache.hadoop.conf.Configuration(paimon-s3 只带 S3,不带它)
-    curl -fL --retry 6 --retry-delay 3 --retry-all-errors "${M2}/org/apache/flink/flink-shaded-hadoop-2-uber/2.8.3-10.0/flink-shaded-hadoop-2-uber-2.8.3-10.0.jar" -o flink-shaded-hadoop.jar
+    curl -fL --retry 6 --retry-delay 3 --retry-connrefused --retry-all-errors "${M2}/org/apache/flink/flink-shaded-hadoop-2-uber/2.8.3-10.0/flink-shaded-hadoop-2-uber-2.8.3-10.0.jar" -o flink-shaded-hadoop.jar
 # 可观测(批3):PrometheusReporter 在 1.19.3 镜像里已预装为插件
 # (/opt/flink/plugins/metrics-prometheus/),无需 COPY;只要 FLINK_PROPERTIES 配 factory.class 即加载。
 USER flink

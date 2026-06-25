@@ -25,8 +25,13 @@ def main() -> None:
         df = spark.read.format("hudi").load(f"s3a://{bucket}/hudi/{table}")
 
     if pk:
-        rows = df.filter(df.id == int(pk)).select("status").collect()
-        print("RESULT=" + ("ABSENT" if not rows else str(rows[0]["status"])))
+        # 不假设有 status 列(comment 表没有);有则回它的值,否则回 PRESENT 表示行在
+        probe = "status" if "status" in df.columns else "id"
+        rows = df.filter(df.id == int(pk)).select(probe).collect()
+        if not rows:
+            print("RESULT=ABSENT")
+        else:
+            print("RESULT=" + (str(rows[0][probe]) if probe == "status" else "PRESENT"))
     else:
         print(f"COUNT={df.count()}")
     spark.stop()

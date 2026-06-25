@@ -42,7 +42,9 @@ def _latest(df_kafka, names, envelope):
         *[src.getField(c).alias(c) for c in names],
         col("e.op").alias("_op"), col("e.ts_ms").alias("_ts"), col("offset").alias("_off"),
     ).where(col("id").isNotNull())
-    w = Window.partitionBy("id").orderBy(col("_ts").desc_nulls_last(), col("_off").desc())
+    # 同一 id 的所有事件在同一 Kafka 分区,offset 严格单调=事件真实顺序;以 offset 为主键
+    # 比 ts_ms 更稳(ts_ms 同事务内会并列、个别版本可能为 null,desc_nulls_last 会误选旧事件)。
+    w = Window.partitionBy("id").orderBy(col("_off").desc())
     return flat.withColumn("_rn", row_number().over(w)).where(col("_rn") == 1).drop("_rn", "_ts", "_off")
 
 

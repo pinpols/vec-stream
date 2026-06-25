@@ -12,7 +12,9 @@ SMOKE_PK=""
 cleanup() { [ -n "${SMOKE_PK:-}" ] && docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAqc "DELETE FROM article WHERE id=$SMOKE_PK;" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-write() { "${COMPOSE[@]}" run --rm spark-lake iceberg article >/dev/null 2>&1; }
+# 批量读在执行时拍一次 endOffsets;先等 Debezium 把刚才的变更 WAL→Kafka produce 完,
+# 否则批读快照可能早于消息到达,assert 拿到 ABSENT 假失败(冷启动/Connect 刚注册时尤甚)。
+write() { sleep "${CDC_SETTLE:-3}"; "${COMPOSE[@]}" run --rm spark-lake iceberg article >/dev/null 2>&1; }
 status() { "${COMPOSE[@]}" run --rm spark-lake query-iceberg article "$1" 2>/dev/null | grep -oE 'RESULT=[^[:space:]]+' | tail -1 | cut -d= -f2; }
 assert() { local got; got="$(status "$1")"; if [ "$got" = "$2" ]; then echo "  id=$1 -> $got ✓"; else echo "  id=$1 -> '$got'(期望 '$2')✗" >&2; exit 1; fi; }
 
