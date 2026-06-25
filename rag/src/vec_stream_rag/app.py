@@ -17,11 +17,17 @@ from .index_metadata import check_index_metadata
 from .llm import active_provider, api_key_env, generate_answer, llm_available
 from .logging_setup import setup_logging
 from .rerank import Reranker
+from .tracing import get_tracer, instrument_app, setup_tracing
 
 # 模块加载即装配 root logger(覆盖启动期日志);给 root 配 handler 不与 uvicorn 打架。
 # uvicorn access log 走自己的 logger,如需 JSON 化按 README 用 --log-config / --no-access-log。
 setup_logging()
 log = logging.getLogger("rag")
+
+# 模块加载即装配追踪:OTEL_ENABLED 非 true 时为 no-op 且不 import otel(零开销)。
+# 须在 app 创建前调用,以便 httpx/psycopg 自动埋点对随后所有调用生效。
+setup_tracing("vec-stream-rag")
+tracer = get_tracer("vec_stream_rag")
 
 # rag 用最小权限只读角色 vs_rag(不 BYPASSRLS):优先 RAG_PG_DSN,回退 PG_DSN。
 # 默认连 vs_rag,查询前必须 SET app.tenant 否则 RLS 命中 0 行。
@@ -80,6 +86,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="vec-stream-rag", lifespan=lifespan)
+# FastAPI 请求级自动埋点须在 app 创建后做(/search /ask 请求 span);未启用时 no-op。
+instrument_app(app)
 
 
 def _load_api_keys() -> dict[str, str]:
@@ -156,31 +164,44 @@ def embed_query(query: str) -> list[float]:
     - EMBED_SERVICE_URL 非空:走 embed-service(它统一加 bge query 前缀)。
     - EMBED_PROVIDER=openai:OpenAI 兼容 embeddings(generic 模型不加 bge 前缀)。
     - 否则:进程内 SentenceTransformer + bge query 前缀。"""
-    if EMBED_SERVICE_URL:
-        import httpx
+    with tracer.start_as_current_span("embed_query") as span:
+        backend = "embed-service" if EMBED_SERVICE_URL else EMBED_PROVIDER
+        span.set_attribute("embed.backend", backend)
+        span.set_attribute("embed.model", EMBED_MODEL)
+        if EMBED_SERVICE_URL:
+            import httpx
 
-        resp = httpx.post(
-            EMBED_SERVICE_URL.rstrip("/") + "/embed",
-            json={"texts": [query], "kind": "query"},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        return resp.json()["embeddings"][0]
-    if EMBED_PROVIDER == "openai":
-        from openai import OpenAI
+            # httpx 自动埋点会在此出站请求注入 traceparent → 串联 rag→embed-service。
+            resp = httpx.post(
+                EMBED_SERVICE_URL.rstrip("/") + "/embed",
+                json={"texts": [query], "kind": "query"},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            return resp.json()["embeddings"][0]
+        if EMBED_PROVIDER == "openai":
+            from openai import OpenAI
 
-        client = OpenAI(base_url=EMBED_OPENAI_BASE_URL or None)
-        resp = client.embeddings.create(model=EMBED_MODEL, input=[query])
-        return resp.data[0].embedding
-    return state["model"].encode(QUERY_PREFIX + query, normalize_embeddings=True).tolist()
+            # openai SDK 底层走 httpx → 同样自动注入 traceparent 串联 rag→embedding 网关。
+            client = OpenAI(base_url=EMBED_OPENAI_BASE_URL or None)
+            resp = client.embeddings.create(model=EMBED_MODEL, input=[query])
+            return resp.data[0].embedding
+        return state["model"].encode(QUERY_PREFIX + query, normalize_embeddings=True).tolist()
 
 
 def retrieve(query: str, tenant_id: str, top_k: int, status: str | None) -> list[dict]:
     """向量召回,多租过滤必须带 tenant_id(DESIGN.md §3.5)。"""
-    qvec = embed_query(query)
-    if VECTOR_BACKEND == "qdrant":
-        return _retrieve_qdrant(qvec, tenant_id, top_k, status)
-    return _retrieve_pgvector(qvec, tenant_id, top_k, status)
+    with tracer.start_as_current_span("retrieve") as span:
+        span.set_attribute("rag.tenant", tenant_id)
+        span.set_attribute("rag.top_k", top_k)
+        span.set_attribute("rag.backend", VECTOR_BACKEND)
+        qvec = embed_query(query)
+        if VECTOR_BACKEND == "qdrant":
+            hits = _retrieve_qdrant(qvec, tenant_id, top_k, status)
+        else:
+            hits = _retrieve_pgvector(qvec, tenant_id, top_k, status)
+        span.set_attribute("rag.hits", len(hits))
+        return hits
 
 
 def _set_app_tenant(cur, tenant_id: str) -> None:
@@ -253,12 +274,17 @@ def _retrieve_qdrant(
 
 def apply_rerank(query: str, hits: list[dict], top_n: int) -> list[dict]:
     """有 reranker 用交叉编码器重排;没有则按向量分数截断。"""
-    if state.get("reranker") and hits:
-        scores = state["reranker"].rerank(query, [h["content"] for h in hits])
-        for h, s in zip(hits, scores, strict=False):
-            h["rerank_score"] = round(s, 4)
-        hits = sorted(hits, key=lambda h: h["rerank_score"], reverse=True)
-    return hits[:top_n]
+    with tracer.start_as_current_span("apply_rerank") as span:
+        reranked = bool(state.get("reranker")) and bool(hits)
+        span.set_attribute("rag.rerank.applied", reranked)
+        span.set_attribute("rag.rerank.candidates", len(hits))
+        span.set_attribute("rag.top_n", top_n)
+        if reranked:
+            scores = state["reranker"].rerank(query, [h["content"] for h in hits])
+            for h, s in zip(hits, scores, strict=False):
+                h["rerank_score"] = round(s, 4)
+            hits = sorted(hits, key=lambda h: h["rerank_score"], reverse=True)
+        return hits[:top_n]
 
 
 @app.get("/healthz")
@@ -337,7 +363,13 @@ def ask(req: AskRequest, tenant_id: str = Depends(require_tenant)):
         }
         for i, h in enumerate(hits)
     ]
-    result = generate_answer(req.query, sources)
+    with tracer.start_as_current_span("generate_answer") as span:
+        span.set_attribute("rag.tenant", tenant_id)
+        span.set_attribute("rag.sources", len(sources))
+        span.set_attribute("llm.provider", active_provider())
+        # generate_answer 内部经 openai SDK(httpx)调 LLM 网关 → traceparent 自动串联。
+        result = generate_answer(req.query, sources)
+        span.set_attribute("llm.model", result["model"])
     return AskResponse(
         answer=result["answer"],
         sources=[Source(**s) for s in sources],

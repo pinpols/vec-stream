@@ -12,6 +12,17 @@ dependencies = [
     "qdrant-client>=1.12",
 ]
 
+[project.optional-dependencies]
+# OpenTelemetry 分布式追踪(可选)。默认 `uv sync` 不装;启用追踪需 `uv sync --extra otel`。
+# 运行期由 OTEL_ENABLED=true 触发装配;未装该 extra 时默认路径零开销、不 import otel。
+otel = [
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp>=1.27",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-psycopg>=0.48b0",
+]
+
 [dependency-groups]
 dev = ["pytest>=8.0"]
 

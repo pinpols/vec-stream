@@ -44,6 +44,13 @@ from .schema_check import check_schema
 from .sink import make_sink
 from .slot_monitor import start_monitor
 from .source_db import SourceDB
+from .tracing import (
+    extract_context,
+    record_span_exception,
+    set_span_attribute,
+    setup_tracing,
+    start_process_span,
+)
 
 setup_logging()
 log = logging.getLogger("worker")
@@ -54,6 +61,16 @@ UPSERT_OPS = {"c", "r", "u"}
 def table_from_topic(topic: str) -> str:
     """cdc.public.article → article"""
     return topic.rsplit(".", 1)[-1]
+
+
+def _event_pk(event: dict, table: str, cfg: Config):
+    """尽力从事件 after/before 镜像取主键值,供 span 属性使用(无则返回 None)。"""
+    table_cfg = cfg.tables.get(table)
+    if not table_cfg:
+        return None
+    pk_field = table_cfg.get("pk", "id")
+    image = event.get("after") or event.get("before") or {}
+    return image.get(pk_field)
 
 
 def build_source_text(after: dict, fields: list[str]) -> str:
@@ -191,6 +208,9 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
     table = table_from_topic(msg.topic())
     # 当前消息的 Kafka 坐标 → 与向量写入同事务写进处理账本(PG 侧审计真相源)
     offset_ref = (msg.topic(), msg.partition(), msg.offset())
+    # Debezium 事件不带上游 trace context,故 worker 每条事件起新 trace;
+    # 若消息 header 带 traceparent(如回投/重放注入)则 extract 续接。
+    upstream_ctx = extract_context(msg.headers())
     last_err: Exception | None = None
     data_attempts = 0
     transient_attempts = 0
@@ -198,9 +218,18 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
         try:
             event = json.loads(msg.value())
             if event is not None:
-                action = process_event(
-                    event, table, cfg, embedder, sink, source_db, offset_ref=offset_ref
-                )
+                op = event.get("op")
+                pk = _event_pk(event, table, cfg)
+                with start_process_span(table, op, pk, context=upstream_ctx) as span:
+                    try:
+                        action = process_event(
+                            event, table, cfg, embedder, sink, source_db, offset_ref=offset_ref
+                        )
+                    except Exception as e:
+                        # span 内记录异常并置 ERROR,再抛出交由外层重试/DLQ 逻辑处理
+                        record_span_exception(span, e)
+                        raise
+                    set_span_attribute(span, "action", action)
                 EVENTS.labels(table=table, action=action).inc()
                 if event.get("ts_ms"):
                     SYNC_DELAY.observe(max(0.0, time.time() - event["ts_ms"] / 1000))
@@ -244,6 +273,7 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
 
 
 def run() -> None:
+    setup_tracing("vec-stream-worker")
     cfg = Config()
     # M2:启动期 schema 校验(改列/删列快速失败)。可用 SCHEMA_CHECK=false 跳过。
     if cfg.schema_check:

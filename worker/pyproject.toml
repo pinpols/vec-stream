@@ -13,6 +13,17 @@ dependencies = [
     "openai>=1.40",
 ]
 
+[project.optional-dependencies]
+# 分布式追踪可选依赖。默认 `uv sync` 不装(OTEL_ENABLED 关时代码也不 import otel);
+# `uv sync --extra otel` 才装。confluent-kafka 埋点若不可用由 main 的手动 span 兜底。
+otel = [
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp>=1.27",
+    "opentelemetry-instrumentation-psycopg>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-confluent-kafka>=0.48b0",
+]
+
 [dependency-groups]
 dev = ["pytest>=8.0"]
 

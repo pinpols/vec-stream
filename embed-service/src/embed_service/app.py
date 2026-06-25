@@ -32,6 +32,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
+from embed_service.tracing import instrument_app, setup_tracing
+
+# 进程启动即接线追踪(OTEL_ENABLED 非 true 时为 no-op,不 import otel,零开销)。
+setup_tracing("vec-stream-embed-service")
+
 # ---- 配置(全部走环境变量)---------------------------------------------------
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
 EMBED_DIM = int(os.getenv("EMBED_DIM", "512"))
@@ -50,6 +55,23 @@ QUERY_PREFIX = os.getenv("EMBED_QUERY_PREFIX", "为这个句子生成表示以�
 
 # 进程级共享状态(模型 + 动态批处理调度器)。
 state: dict = {}
+
+
+def _encode_span(batch_size: int):
+    """编码批的可选手动 span(带 batch size)。
+
+    OTEL_ENABLED 非 true 时返回 nullcontext——不 import otel、零开销。
+    """
+    if os.getenv("OTEL_ENABLED", "false").strip().lower() not in ("true", "1", "yes", "on"):
+        from contextlib import nullcontext
+
+        return nullcontext()
+    from opentelemetry import trace
+
+    tracer = trace.get_tracer("embed_service")
+    return tracer.start_as_current_span(
+        "embed.encode_batch", attributes={"embed.batch_size": batch_size}
+    )
 
 
 # ---- 动态批处理调度器 -------------------------------------------------------
@@ -147,7 +169,12 @@ class BatchScheduler:
     def _encode(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        vecs = self._model.encode(texts, normalize_embeddings=True, batch_size=ENCODE_BATCH_SIZE)
+        # 可选手动 span:把"合并后一批喂模型"这一步显式标出来(带 batch size),
+        # 挂在当前请求的 trace 下。OTEL_ENABLED 非 true 时 _span 为 nullcontext,零开销。
+        with _encode_span(len(texts)):
+            vecs = self._model.encode(
+                texts, normalize_embeddings=True, batch_size=ENCODE_BATCH_SIZE
+            )
         return [v.tolist() for v in vecs]
 
 
@@ -169,6 +196,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="vec-stream-embed-service", lifespan=lifespan)
+
+# 启用时给 FastAPI 自动埋点:每个 /embed 一个 server span,并自动从上游
+# (rag)的 traceparent header 续接 trace,实现 rag → embed-service 串联。
+instrument_app(app)
 
 
 # ---- 请求 / 响应 schema(契约)----------------------------------------------
