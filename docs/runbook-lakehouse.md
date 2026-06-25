@@ -82,6 +82,9 @@ $COMPOSE run --rm spark-lake query-iceberg article 1     # RESULT=<status|ABSENT
 
 - **崩溃自愈**:checkpoint 在 `s3a://warehouse/_chk/<engine>-<table>`;容器 `restart: unless-stopped`;`spark.streaming.stopGracefullyOnShutdown=true` 让 SIGTERM 时当前微批落完再退。配合 Hudi/Iceberg 主键合并 = 重放幂等。
 - **背压 / 有界恢复**:`MAX_OFFSETS_PER_TRIGGER`(留空=无界)限制单微批拉取量;`FAIL_ON_DATA_LOSS`(默认 `true`,丢 offset 即响亮失败)。两者经 `.env` 透传(见 `.env.example`)。
+- **单 writer 约束(Hudi)**:Hudi 默认无锁,多 writer 写同一表会损坏。本架构**流是唯一写者**,
+  **批量回填 `run.sh hudi <table>` 务必在流停止时跑**。真要多 writer 才设 `HUDI_LOCK_ZK_URL=<host:port>`
+  起 ZooKeeper 锁(S3/MinIO 不支持零依赖文件锁)。故障注入实测见 `docs/test-plan-fault-injection.md`。
 - **凭据安全**:S3/MinIO secret **不进** spark-submit 命令行 / Spark UI Environment 页 —— Hadoop 走 `EnvironmentVariableCredentialsProvider`、Iceberg S3FileIO 走默认凭据链,均从 `AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY` 环境变量读。生产务必改掉 `.env` 里的 MinIO 默认弱口令。
 
 ## 复用 file-batch-system 的 Kafka / MinIO(本机资源紧张时)

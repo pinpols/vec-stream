@@ -1,0 +1,52 @@
+name: lakehouse-smoke
+
+# 湖腿端到端冒烟(CDC → spark-lake → Hudi / Iceberg,真起 docker-compose)。
+# 重 e2e(要 build spark-lake 镜像 + 起 kafka/pg/minio + 跑 Spark 批),不挂每次 push/PR,
+# 走 nightly + 手动触发(与项目"重 e2e nightly 非阻塞"惯例一致)。
+#
+# ⚠️ 说明:本 workflow 内的 hudi/iceberg-smoke 脚本本地已逐条验证过(insert/update/delete 全绿),
+#         但 workflow 编排本身尚未在 GitHub Actions 真跑过——首次需手动 dispatch 观察一次。
+on:
+  schedule:
+    - cron: "0 18 * * *"   # 每日 UTC 18:00(非阻塞)
+  workflow_dispatch: {}     # 手动触发
+
+permissions:
+  contents: read
+
+jobs:
+  lakehouse-smoke:
+    name: hudi + iceberg smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # smoke 脚本读 .env 取 DEBEZIUM_PASSWORD 等;CI 用占位默认(与 .env.example 一致)。
+      - name: Seed .env (dev placeholders)
+        run: |
+          cat > .env <<'ENV'
+          POSTGRES_USER=vec_stream
+          POSTGRES_PASSWORD=change-me-superuser
+          POSTGRES_DB=vec_stream
+          DEBEZIUM_PASSWORD=change-me-debezium
+          WORKER_PASSWORD=change-me-worker
+          RAG_PASSWORD=change-me-rag
+          MINIO_ROOT_USER=minioadmin
+          MINIO_ROOT_PASSWORD=minioadmin123
+          ENV
+
+      - name: Hudi smoke (CDC → spark-lake → Hudi)
+        run: bash scripts/hudi-smoke.sh
+
+      - name: Iceberg smoke (CDC → spark-lake → Iceberg)
+        run: bash scripts/iceberg-smoke.sh
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.lake.yml logs --tail=120 || true
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.lake.yml down -v --remove-orphans || true
