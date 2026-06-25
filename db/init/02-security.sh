@@ -81,6 +81,22 @@ DROP POLICY IF EXISTS tenant_isolation ON doc_vectors;
 CREATE POLICY tenant_isolation ON doc_vectors
     USING (tenant_id = current_setting('app.tenant', true));
 
+-- ── 3b) 源库租户完整性:comment 只能引用同租户 article,防跨租户脏引用进入跨表文档 ──
+CREATE UNIQUE INDEX IF NOT EXISTS uq_article_tenant_id ON article (tenant_id, id);
+DO $do$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_comment_article_tenant'
+  ) THEN
+    ALTER TABLE comment
+      ADD CONSTRAINT fk_comment_article_tenant
+      FOREIGN KEY (tenant_id, article_id)
+      REFERENCES article (tenant_id, id)
+      ON DELETE CASCADE;
+  END IF;
+END
+$do$;
+
 -- ── 4) 授权:各角色最小集 ──
 -- schema 访问(PG15+ 默认已给 PUBLIC USAGE,这里显式声明更稳)
 GRANT USAGE ON SCHEMA public TO vs_debezium, vs_worker, vs_rag;

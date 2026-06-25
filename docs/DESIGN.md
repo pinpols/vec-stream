@@ -34,13 +34,13 @@
 | ✅ 做 | ❌ 不做 |
 |---|---|
 | 单库 / 单数据源的 CDC → 多 sink 扇出 | 多源异构数据融合(多上游 join) |
-| 向量 sink + lakehouse(Iceberg)sink | 通用 ETL / 数据治理平台 |
+| 向量 sink + lakehouse(Hudi + Iceberg)sink | 通用 ETL / 数据治理平台 |
 | 行级变更驱动的增量同步 | 自托管 Spark / Flink 集群(湖侧用 Spark local 模式轻量落地) |
 | 向量检索 + 基础 RAG 问答 | 复杂 Agent 编排 / 多轮对话记忆 |
 | 单表文档 + 简单跨表反查拼接 | 流式多表 JOIN(交给后续可选的 Flink CDC 阶段) |
 | 多租隔离(payload 过滤) | 行级权限 / 细粒度 ACL |
 
-> **定位**:本项目是一个 **CDC 实时多 sink 分发底座**——以「Kafka 为单一事实源、多个下游各自消费」为骨架,当前落地两条 sink:向量(RAG 底座)与 Hudi lakehouse(分析视图)。核心练的是 **CDC(Debezium/WAL)+ Embedding + 向量检索 + RAG + lakehouse 物化** 这套技术栈,**不是**再造分布式批处理 / 数据治理平台。凡是会把项目拖向「重运维平台」的需求(自托管 Spark/Flink 集群、K8s 调度、多源融合),一律推迟或限定在最小演示范围(如 Hudi 仅 Spark local 模式)。
+> **定位**:本项目是一个 **CDC 实时多 sink 分发底座**——以「Kafka 为单一事实源、多个下游各自消费」为骨架,当前落地三条 sink:向量(RAG 底座)、Hudi(分析视图)、Iceberg(分析视图)。核心练的是 **CDC(Debezium/WAL)+ Embedding + 向量检索 + RAG + lakehouse 物化** 这套技术栈,**不是**再造分布式批处理 / 数据治理平台。凡是会把项目拖向「重运维平台」的需求(自托管 Spark/Flink 集群、K8s 调度、多源融合),一律推迟或限定在最小演示范围(湖侧为 Spark local runner,生产可迁移到托管 Spark)。
 
 ---
 
@@ -249,56 +249,40 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 
 ## 6. 技术栈选型
 
-| 环节 | MVP 选型 | 进阶 |
+| 环节 | 当前选型 | 生产演进 |
 |---|---|---|
-| CDC | Debezium standalone(Kafka Connect) | Debezium 集群 |
-| 队列 | Kafka | — |
-| Sync Worker | **Python**(AI 生态顺手)或 Java(贴合既有栈) | — |
-| Embedding | 开源 bge/e5 本地起 或 Voyage API | 自托管 GPU 推理 |
-| 向量库 | pgvector | Qdrant |
-| RAG 服务 | Python(FastAPI) | — |
-| 生成模型 | OpenAI 兼容 API(`OPENAI_BASE_URL` 可指 agent-ctl 网关 / OpenAI / DeepSeek / 通义 / Ollama / vLLM) | — |
-| rerank | 暂无 | rerank 模型 |
-
-> **唯一待你拍板的决策**:Sync Worker + RAG 服务用 **Python** 还是 **Java**?
-> - 选 **Python**:AI / embedding / 向量库 SDK 生态最顺,贴合「学新技术」目标 —— **推荐**。
-> - 选 **Java**:复用你现有技术栈与工程规范,但 AI 库生态不如 Python。
-> 本文档默认按 Python 写示例,确认后我据此搭脚手架。
+| CDC | Debezium standalone(Kafka Connect),单 connector / 单复制槽 | Connect distributed + connector 配置备份 |
+| 队列 | 单节点 Kafka(KRaft) | 3+ broker,RF>=3,min ISR,容量/磁盘告警 |
+| Sync Worker | Python(Confluent Kafka + pgvector/Qdrant) | 同 group 多实例水平扩展 |
+| Embedding | 本地 bge-small 或独立 embed-service / OpenAI compatible | 独立推理服务池,动态批处理,GPU/托管推理 |
+| 向量库 | pgvector + RLS,Qdrant 可切 | Qdrant collection 蓝绿 / 托管向量库 |
+| RAG 服务 | Python(FastAPI),/search + /ask + rerank | API gateway、限流、审计日志 |
+| Lakehouse | Spark local runner 写 Hudi + Iceberg | Spark on Kubernetes/YARN/托管 Spark |
+| 生成模型 | OpenAI 兼容 API(`OPENAI_BASE_URL` 可指 agent-ctl 网关 / OpenAI / DeepSeek / 通义 / Ollama / vLLM) | 网关路由、降级、成本治理 |
+| 质量评估 | `eval/` retrieval/generation/reconcile | 发布前强制质量门禁 |
 
 ---
 
-## 7. 分阶段路线图
+## 7. 已落地里程碑
 
-**阶段 0 · 最小闭环(第 1 周)**
-- Debezium 监听 PG 一张表 → Kafka
-- Sync Worker 只处理 INSERT:抽文本 → embedding → 写 pgvector
-- `/search` 接口能语义搜出来
-- 目标:**端到端跑通一条数据**
+- **阶段 0**:Debezium → Kafka → Worker → pgvector → `/search` 最小闭环已完成。
+- **阶段 1**:UPDATE / DELETE、确定性向量 ID、hash 去重、DLQ、处理账本已完成。
+- **阶段 2**:`/ask`、OpenAI compatible LLM、rerank、多租过滤、RLS、API key 绑定 tenant 已完成。
+- **阶段 3**:Qdrant 后端、跨表文档、Prometheus/Grafana、OTel、eval 评估与对账已完成。
+- **Lakehouse**:Spark Hudi + Spark Iceberg 批量/连续流、smoke、table maintenance、batch infra 复用已完成。
+- **工程化**:Python lint/test CI、compose/shell/lake 脚本结构校验、pre-commit 门禁已完成。
 
-**阶段 1 · 完整 CDC 语义(第 2 周)**
-- 支持 UPDATE(删旧+写新)/ DELETE
-- 确定性 ID + text_hash 去重
-- DLQ + 重试
-
-**阶段 2 · RAG 质量(第 3 周)**
-- `/ask` 接 OpenAI 兼容 API 生成,带引用
-- 加 rerank
-- 多租 payload 过滤
-
-**阶段 3 · 进阶(按需)**
-- 切 Qdrant,学 HNSW 调优
-- 跨表文档:先反查,压力大再评估 Flink CDC
-- 监控大盘(同步延迟 / 跳过率 / DLQ)
+当前成熟度与准入标准见 [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md)。
 
 ---
 
-## 8. 待决问题(Open Questions)
+## 8. 下一阶段生产决策
 
-1. **语言**:Sync Worker / RAG 用 Python(推荐)还是 Java?→ 待确认
-2. **Embedding 模型**:本地开源(省钱、练部署)还是托管 API(省事)?
-3. **业务文档形态**:单表一行即文档,还是需要跨表拼?→ 决定是否给 Flink 留位置
-4. **数据规模**:预估表行数 / 变更频率?→ 影响分区数、批大小、向量库选型时机
+这些不是当前本地样板必须内建的能力,而是真实上线前需要按部署环境拍板:
 
----
-
-*下一步:确认第 6/8 节的待决问题后,即可生成项目脚手架(目录结构 + docker-compose + 最小可跑代码)。*
+1. **Schema governance**:继续 JSON + 契约测试,还是引入 Avro/Protobuf + Schema Registry。
+2. **HA 边界**:Kafka / Connect / Postgres 是否使用托管服务,以及 replication slot failover 策略。
+3. **Spark 运行面**:local runner 迁移到 Spark on Kubernetes/YARN/托管 Spark 的提交与权限模型。
+4. **安全基线**:Kafka SASL/TLS、PG TLS、secret manager、密钥轮换周期。
+5. **SLO 校准**:按真实数据量确定 CDC 延迟、DLQ backlog、slot lag、Spark 微批延迟阈值。
+6. **数据治理**:保留周期、合规删除、备份恢复、审计日志和 lakehouse time-travel 窗口。

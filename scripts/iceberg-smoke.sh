@@ -23,7 +23,11 @@ echo "== 起基础设施 + iceberg-rest =="
 
 echo "== 确保 cdc connector 存在 =="
 for _ in $(seq 1 30); do curl -fsS "$CONNECT_URL/connectors" >/dev/null 2>&1 && break; sleep 2; done
-curl -fsS "$CONNECT_URL/connectors/vec-stream-pg" >/dev/null 2>&1 && echo "  已存在" || CONNECT_URL="$CONNECT_URL" ./debezium/register.sh >/dev/null
+if curl -fsS "$CONNECT_URL/connectors/vec-stream-pg" >/dev/null 2>&1; then
+  echo "  已存在"
+else
+  CONNECT_URL="$CONNECT_URL" ./debezium/register.sh >/dev/null
+fi
 
 echo "== 构建 spark-lake =="
 "${COMPOSE[@]}" build spark-lake >/dev/null

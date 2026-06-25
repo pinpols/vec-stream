@@ -41,6 +41,7 @@ RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 # 向量库后端:pgvector(默认)| qdrant —— 与 worker 的 VECTOR_BACKEND 保持一致
 VECTOR_BACKEND = os.getenv("VECTOR_BACKEND", "pgvector")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "doc_vectors")
 # bge 系列约定:检索 query 加指令前缀(passage 不加)
 QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章:"
@@ -58,8 +59,31 @@ INDEX_METADATA_CHECK = os.getenv("INDEX_METADATA_CHECK", "true").lower() == "tru
 state: dict = {}
 
 
+def _is_production() -> bool:
+    return os.getenv("APP_ENV", "").lower() in {"prod", "production"}
+
+
+def _validate_runtime_security() -> None:
+    """生产模式启动防呆:禁止把本地演示凭据/裸 Qdrant 带到生产。"""
+    if not _is_production():
+        return
+    keys = _load_api_keys()
+    if not keys:
+        raise RuntimeError("APP_ENV=production 时必须设置 RAG_API_KEYS")
+    if "dev-key-default" in keys:
+        raise RuntimeError("APP_ENV=production 时禁止使用 dev-key-default")
+    if any(not tenant for tenant in keys.values()):
+        raise RuntimeError("RAG_API_KEYS 的 tenant_id 不能为空")
+    weak_dsn_markers = ("change-me", "vs_rag:vs_rag@", "postgres:postgres@")
+    if any(marker in PG_DSN for marker in weak_dsn_markers):
+        raise RuntimeError("APP_ENV=production 时禁止使用默认/弱 RAG_PG_DSN")
+    if VECTOR_BACKEND == "qdrant" and not QDRANT_API_KEY:
+        raise RuntimeError("APP_ENV=production 且 VECTOR_BACKEND=qdrant 时必须设置 QDRANT_API_KEY")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _validate_runtime_security()
     if INDEX_METADATA_CHECK:
         check_index_metadata(PG_DSN)
     # 用远程 embedding(service / openai)时不在本进程加载 embedding 模型(解耦省内存)
@@ -68,7 +92,7 @@ async def lifespan(app: FastAPI):
     if VECTOR_BACKEND == "qdrant":
         from qdrant_client import QdrantClient
 
-        state["qdrant"] = QdrantClient(url=QDRANT_URL)
+        state["qdrant"] = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY or None)
     else:
         # FastAPI 同步端点跑在线程池,psycopg 连接非线程安全 → 必须用连接池
         state["pool"] = ConnectionPool(

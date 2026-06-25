@@ -12,8 +12,8 @@ services:
     command: jobmanager
     # 8086 = Flink UI;9249 = PrometheusReporter(批3 可观测,Prometheus 抓这里)
     ports:
-      - "8086:8081"
-      - "9249:9249"
+      - "127.0.0.1:8086:8081"
+      - "127.0.0.1:9249:9249"
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-paimon-jobmanager
@@ -31,7 +31,7 @@ services:
     command: taskmanager
     # 宿主 9250 → 容器 9249(jobmanager 已占宿主 9249);TaskManager 指标(吞吐/反压/checkpoint)
     ports:
-      - "9250:9249"
+      - "127.0.0.1:9250:9249"
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-paimon-jobmanager
@@ -55,7 +55,7 @@ services:
         set -euo pipefail
         sed -i 's/^  address: 0.0.0.0/  address: flink-paimon-jobmanager/' /opt/flink/conf/config.yaml
         SRC="/opt/sql/$${PAIMON_SQL:-cdc_to_paimon.sql}"
-        OUT="/tmp/$(basename "$SRC")"
+        OUT="/tmp/$(basename "$$SRC")"
         # 用 | 作分隔符避开 key 里的 /;凭据只在容器内的临时文件出现,不进镜像/git
         sed -e "s|__S3_ACCESS_KEY__|$${MINIO_ROOT_USER}|g" \
             -e "s|__S3_SECRET_KEY__|$${MINIO_ROOT_PASSWORD}|g" "$$SRC" > "$$OUT"

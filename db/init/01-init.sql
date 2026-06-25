@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS article (
     status      TEXT        NOT NULL DEFAULT 'published',
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_article_tenant_id ON article (tenant_id, id);
 
 -- Debezium 逻辑复制需要:对 UPDATE/DELETE 输出完整 before 镜像
 ALTER TABLE article REPLICA IDENTITY FULL;
@@ -41,6 +42,19 @@ CREATE TABLE IF NOT EXISTS comment (
     body        TEXT        NOT NULL,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_comment_article_tenant'
+    ) THEN
+        ALTER TABLE comment
+            ADD CONSTRAINT fk_comment_article_tenant
+            FOREIGN KEY (tenant_id, article_id)
+            REFERENCES article (tenant_id, id)
+            ON DELETE CASCADE;
+    END IF;
+END
+$$;
 ALTER TABLE comment REPLICA IDENTITY FULL;
 
 -- 3) 向量表:存 chunk 向量(512 维,对应 BAAI/bge-small-zh-v1.5)

@@ -117,3 +117,22 @@ def test_require_tenant_unit_invalid_json(monkeypatch):
     """RAG_API_KEYS 非法 JSON → 全拒(_load_api_keys 返回空)。"""
     monkeypatch.setenv("RAG_API_KEYS", "{not json")
     assert appmod._load_api_keys() == {}
+
+
+def test_production_rejects_dev_api_key(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("RAG_API_KEYS", json.dumps({"dev-key-default": "default"}))
+    monkeypatch.setattr(appmod, "PG_DSN", "postgresql://vs_rag:strong@postgres:5432/vec_stream")
+    monkeypatch.setattr(appmod, "VECTOR_BACKEND", "pgvector")
+    with pytest.raises(RuntimeError, match="dev-key-default"):
+        appmod._validate_runtime_security()
+
+
+def test_production_qdrant_requires_api_key(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("RAG_API_KEYS", json.dumps({"prod-key": "acme"}))
+    monkeypatch.setattr(appmod, "PG_DSN", "postgresql://vs_rag:strong@postgres:5432/vec_stream")
+    monkeypatch.setattr(appmod, "VECTOR_BACKEND", "qdrant")
+    monkeypatch.setattr(appmod, "QDRANT_API_KEY", "")
+    with pytest.raises(RuntimeError, match="QDRANT_API_KEY"):
+        appmod._validate_runtime_security()

@@ -74,6 +74,13 @@ def _opts(target_table):
         "hoodie.index.type": "GLOBAL_SIMPLE",
         "hoodie.global.simple.index.parallelism": "1",
         "hoodie.simple.index.update.partition.path": "true",
+        # 并发安全:乐观并发控制(OCC)+ 跨进程文件锁。Hudi 默认无锁,多 writer(如流 +
+        # 批量回填同时跑)写同一张表会损坏;OCC 让并发提交在表的 .hoodie/.locks 上串行化,
+        # 冲突方干净 abort 而非破坏数据。FileSystemBasedLockProvider 直接用 S3/MinIO 上的
+        # 表目录,零额外基础设施。OCC 要求失败写清理为 LAZY(否则会删并发方在途文件)。
+        "hoodie.write.concurrency.mode": "optimistic_concurrency_control",
+        "hoodie.write.lock.provider": "org.apache.hudi.client.transaction.lock.FileSystemBasedLockProvider",
+        "hoodie.cleaner.policy.failed.writes": "LAZY",
     }
 
 

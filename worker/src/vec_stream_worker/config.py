@@ -69,6 +69,7 @@ class Config:
     # 向量库后端:pgvector(默认)| qdrant
     vector_backend: str = os.getenv("VECTOR_BACKEND", "pgvector")
     qdrant_url: str = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_api_key: str = os.getenv("QDRANT_API_KEY", "")
     qdrant_collection: str = os.getenv("QDRANT_COLLECTION", "doc_vectors")
     # replication slot lag 监控(slot 不消费会撑爆 PG 磁盘,DESIGN.md §5)
     metrics_port: int = int(os.getenv("METRICS_PORT", "9100"))
@@ -85,3 +86,11 @@ class Config:
             raise ValueError(f"VECTOR_BACKEND 必须是 pgvector|qdrant,得到 {self.vector_backend}")
         if self.embed_dim <= 0 or self.max_doc_chars <= 0:
             raise ValueError("EMBED_DIM / MAX_DOC_CHARS 必须为正数")
+        if os.getenv("APP_ENV", "").lower() in {"prod", "production"}:
+            weak_dsn_markers = ("change-me", "vs_worker:vs_worker@", "postgres:postgres@")
+            if any(marker in self.pg_dsn for marker in weak_dsn_markers):
+                raise ValueError("APP_ENV=production 时禁止使用默认/弱 WORKER_PG_DSN")
+            if self.vector_backend == "qdrant" and not self.qdrant_api_key:
+                raise ValueError(
+                    "APP_ENV=production 且 VECTOR_BACKEND=qdrant 时必须设置 QDRANT_API_KEY"
+                )

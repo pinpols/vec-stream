@@ -12,8 +12,10 @@ MySQL / PostgreSQL → Debezium → Kafka ─┼→ spark-lake hudi    → Hudi 
 
 ## 文档
 
-- 设计文档:[`docs/DESIGN.md`](docs/DESIGN.md) — 架构、核心难点、选型、分阶段路线图
+- 设计文档:[`docs/DESIGN.md`](docs/DESIGN.md) — 架构、核心难点、当前选型、已落地里程碑
 - 企业级演进规划:[`docs/ENTERPRISE.md`](docs/ENTERPRISE.md) — 7 大领域差距、该做/按需/越界判定、M1–M3 路线
+- 生产准入与成熟度:[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) — 当前成熟度、发布门禁、生产部署边界
+- 安全边界:[`docs/SECURITY_BOUNDARY.md`](docs/SECURITY_BOUNDARY.md) — RLS/API key、端口暴露、生产防呆、管理面边界
 - Topic 规划:[`docs/TOPICS.md`](docs/TOPICS.md) — 统一 CDC 多 sink(单连接器/单复制槽,三 sink 共用 cdc.public.* JSON)
 - Lakehouse 腿:[`spark-lake/`](spark-lake/) + [`docs/runbook-lakehouse.md`](docs/runbook-lakehouse.md) — 统一 Spark 引擎写 **Hudi 和 Iceberg**(各自主流引擎,连续流 Structured Streaming + 批量回填),已验证
 - Flink → Paimon(参考样板):[`flink-paimon/`](flink-paimon/) + [`docs/runbook-flink-paimon.md`](docs/runbook-flink-paimon.md) — Paimon 原生引擎(Flink),streaming-native CDC 入湖演示,已验证
@@ -90,6 +92,8 @@ curl -s -X POST http://localhost:8000/search \
 
 > 启动注意(资源紧张的机器):`docker compose up -d` 后若 Connect 起不来,
 > 按「先等 Kafka healthy → 再单独 `docker start vec-stream-connect`」串行启动。
+> 安全边界:compose 暴露到宿主机的端口默认都绑定 `127.0.0.1`,只给本机访问;
+> 生产部署不要直接复用这些 dev 端口映射,详见 [`docs/SECURITY_BOUNDARY.md`](docs/SECURITY_BOUNDARY.md)。
 
 ## 运维
 
@@ -118,6 +122,8 @@ curl -s -X POST http://localhost:8000/search \
   `docker compose up -d qdrant`,worker 用**新 consumer group** 从 Kafka 重放即全量回填
   (`VECTOR_BACKEND=qdrant KAFKA_GROUP_ID=vec-stream-worker-qdrant`);超出 Kafka retention
   的历史要走 Debezium re-snapshot。双 worker 双 group 可让两个库并行保持同步。
+  生产使用 Qdrant 必须启用 `QDRANT_API_KEY` 或其他网络层鉴权;本地 compose 只绑定
+  `127.0.0.1:6333`。
 - **索引配置一致性**:worker 启动时会按后端写 `index_metadata`
   (`pgvector:doc_vectors` 或 `qdrant:<collection>`),rag 启动时校验
   embedding model/dim、chunk 参数、vector backend 是否一致;换模型或维度时按蓝绿重建,
@@ -180,7 +186,11 @@ cd worker && uv run pytest -q   # rag / eval / embed-service 同理
 > worker / rag / embed-service 跑测试需各自依赖;"加载真模型"的用例已 mock,
 > 不会真下载权重。eval 测试是纯 mock,最轻量。
 
-### pre-commit(提交前自动 lint + format + 基础检查)
+### 结构校验 / pre-commit(提交前自动 lint + format + 基础检查)
+
+```bash
+bash scripts/validate.sh          # compose 合并、loopback 端口、shell、spark-lake 语法、shellcheck
+```
 
 ```bash
 uvx pre-commit install            # 装 git hook(每次 commit 自动跑)
@@ -189,4 +199,4 @@ uvx pre-commit run --all-files     # 手动对全仓库跑一次
 
 hooks 见 [`.pre-commit-config.yaml`](.pre-commit-config.yaml):`ruff`(--fix)、
 `ruff-format`、`trailing-whitespace`、`end-of-file-fixer`、`check-yaml`、
-`check-added-large-files`。
+`check-added-large-files`、`scripts/validate.sh`。

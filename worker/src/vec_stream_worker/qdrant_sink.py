@@ -25,8 +25,15 @@ def _row_filter(tenant_id: str, source_table: str, source_pk: str) -> models.Fil
 
 
 class QdrantSink:
-    def __init__(self, url: str, collection: str, dim: int, ledger_dsn: str | None = None):
-        self.client = QdrantClient(url=url)
+    def __init__(
+        self,
+        url: str,
+        collection: str,
+        dim: int,
+        ledger_dsn: str | None = None,
+        api_key: str | None = None,
+    ):
+        self.client = QdrantClient(url=url, api_key=api_key or None)
         self.collection = collection
         # 账本写在 PG 里(Qdrant 无事务):best-effort,无 dsn 则不记账本
         self._ledger_dsn = ledger_dsn

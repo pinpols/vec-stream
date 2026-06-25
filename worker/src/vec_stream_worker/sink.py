@@ -20,7 +20,11 @@ def make_sink(cfg):
 
         # Qdrant 无 PG 事务,账本 best-effort 记进 PG(用 worker 的 pg_dsn)
         return QdrantSink(
-            cfg.qdrant_url, cfg.qdrant_collection, cfg.embed_dim, ledger_dsn=cfg.pg_dsn
+            cfg.qdrant_url,
+            cfg.qdrant_collection,
+            cfg.embed_dim,
+            ledger_dsn=cfg.pg_dsn,
+            api_key=cfg.qdrant_api_key,
         )
     return VectorSink(cfg.pg_dsn)
 

@@ -40,7 +40,7 @@ services:
       METRICS_PORT: "9100"
     ports:
       # Prometheus metrics 暴露到宿主(可选,便于本地抓取/调试)
-      - "9100:9100"
+      - "127.0.0.1:9100:9100"
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,7 +63,7 @@ services:
       # EMBED_SERVICE_URL: http://embed-service:8200
     ports:
       # FastAPI 暴露到宿主 8000
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy

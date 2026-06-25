@@ -8,6 +8,22 @@ permissions:
   contents: read
 
 jobs:
+  structure:
+    name: structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Validate compose and scripts
+        env:
+          REQUIRE_SHELLCHECK: "true"
+        run: bash scripts/validate.sh
+
   # 每个模块独立一个 job(矩阵展开),互不阻塞、可并行。
   # worker/rag/embed-service 依赖 sentence-transformers/torch 较重,
   # 但"加载真模型"的测试本身是 mock 的,不会真下载权重,正常 uv sync 即可。
