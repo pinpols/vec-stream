@@ -12,6 +12,7 @@ MySQL / PostgreSQL → Debezium → Kafka → Vector Sync Worker → 向量库(p
 
 - 设计文档:[`docs/DESIGN.md`](docs/DESIGN.md) — 架构、核心难点、选型、分阶段路线图
 - 企业级演进规划:[`docs/ENTERPRISE.md`](docs/ENTERPRISE.md) — 7 大领域差距、该做/按需/越界判定、M1–M3 路线
+- Hudi 旁路设计:[`docs/HUDI_LAKE_DESIGN.md`](docs/HUDI_LAKE_DESIGN.md) — CDC → Hudi lakehouse 分析视图的边界与落地路线
 
 ## 快速开始(基础设施)
 
