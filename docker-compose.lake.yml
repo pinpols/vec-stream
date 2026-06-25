@@ -49,6 +49,8 @@ services:
 
   # Iceberg REST catalog(元数据);Postgres JDBC 后端(默认 SQLite 并发不稳,
   # Connect sink 高并发 commit 会卡;Postgres 才稳。镜像加了 pg 驱动,见 iceberg-rest/Dockerfile)。
+  # ⚠️ 安全:apache/iceberg-rest-fixture 是测试 fixture,8181 无任何鉴权——仅本地 dev 用,
+  # 切勿绑公网;生产换带鉴权的 catalog(Nessie / Polaris / 自建 REST + token)。
   iceberg-rest:
     build:
       context: ./iceberg-rest

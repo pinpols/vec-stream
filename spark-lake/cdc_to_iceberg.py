@@ -108,7 +108,9 @@ def main() -> None:
         chk = f"s3a://{bucket}/_chk/iceberg-{arg}"
         interval = os.getenv("TRIGGER_SECONDS", "10")
         raw = _reliable(reader("readStream").option("startingOffsets", "earliest")).load()
-        q = (raw.writeStream.foreachBatch(lambda bdf, _e: process(bdf))
+        # queryName 固定:让 streaming 指标名稳定为 spark_lake.driver.iceberg-<arg>.*,
+        # 否则默认用每次重启都变的 query runId(UUID),Grafana 面板会断、死时序堆积。
+        q = (raw.writeStream.queryName(f"iceberg-{arg}").foreachBatch(lambda bdf, _e: process(bdf))
              .option("checkpointLocation", chk).trigger(processingTime=f"{interval} seconds").start())
         print(f"[cdc_to_iceberg] STREAM {pattern} -> ice.lake.* (chk={chk}, trigger={interval}s)")
         q.awaitTermination()

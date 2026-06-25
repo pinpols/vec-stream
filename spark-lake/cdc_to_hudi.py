@@ -8,7 +8,7 @@ import os
 import sys
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, when
+from pyspark.sql.functions import coalesce, col, from_json, lit, when
 from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 TABLES = {
@@ -29,16 +29,27 @@ def _envelope(cols):
     ])
 
 
+def _value(src, name):
+    # tenant_id 是分区路径,null 会落 __HIVE_DEFAULT_PARTITION__ 且与 GLOBAL_SIMPLE 跨分区
+    # 移动打架,统一兜底到固定占位符,保证分区路径稳定。
+    if name == "tenant_id":
+        return coalesce(src.getField(name), lit("__unknown__")).alias(name)
+    return src.getField(name).alias(name)
+
+
 def _flatten(df_kafka, cols, envelope):
-    parsed = (df_kafka.selectExpr("CAST(value AS STRING) AS json")
+    parsed = (df_kafka.selectExpr("CAST(value AS STRING) AS json", "offset AS _off")
               .where(col("json").isNotNull())
-              .select(from_json(col("json"), envelope).alias("e"))
+              .select(from_json(col("json"), envelope).alias("e"), col("_off"))
               .where(col("e").isNotNull() & col("e.op").isNotNull()))
     is_del = col("e.op") == "d"
     src = when(is_del, col("e.before")).otherwise(col("e.after"))
     return parsed.select(
-        *[src.getField(n).alias(n) for n, _ in cols],
-        col("e.ts_ms").alias("_ts"), is_del.alias("_hoodie_is_deleted"),
+        *[_value(src, n) for n, _ in cols],
+        # precombine 用 ts_ms*1e6+offset 合成单调序:ts_ms 同毫秒/为 null 时仍按 offset
+        #(同 id 同分区 offset 严格单调=真实顺序)定胜者,避免旧事件覆盖新事件(与 Iceberg 侧一致)。
+        (coalesce(col("e.ts_ms"), lit(0)) * lit(1000000) + col("_off")).alias("_ts"),
+        is_del.alias("_hoodie_is_deleted"),
     ).where(col("id").isNotNull())
 
 
@@ -115,7 +126,9 @@ def main() -> None:
         chk = f"s3a://{bucket}/_chk/hudi-{arg}"
         interval = os.getenv("TRIGGER_SECONDS", "10")
         raw = _reliable(reader("readStream").option("startingOffsets", "earliest")).load()
-        q = (raw.writeStream.foreachBatch(lambda bdf, _e: process(bdf))
+        # queryName 固定:让 streaming 指标名稳定为 spark_lake.driver.hudi-<arg>.*,
+        # 否则默认用每次重启都变的 query runId(UUID),Grafana 面板会断、死时序堆积。
+        q = (raw.writeStream.queryName(f"hudi-{arg}").foreachBatch(lambda bdf, _e: process(bdf))
              .option("checkpointLocation", chk).trigger(processingTime=f"{interval} seconds").start())
         print(f"[cdc_to_hudi] STREAM {pattern} -> hudi/* (chk={chk}, trigger={interval}s)")
         q.awaitTermination()
