@@ -13,6 +13,7 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
+from .embedding import make_query_embedder
 from .index_metadata import check_index_metadata
 from .llm import active_provider, api_key_env, generate_answer, llm_available, llm_egress_allowed
 from .logging_setup import setup_logging
@@ -89,18 +90,16 @@ async def lifespan(app: FastAPI):
     # 用远程 embedding(service / openai)时不在本进程加载 embedding 模型(解耦省内存)
     state["model"] = SentenceTransformer(EMBED_MODEL) if _USE_LOCAL_EMBED else None
     state["reranker"] = Reranker(RERANK_MODEL) if RERANK_ENABLED else None
-    # 远程 embedding 的客户端在此初始化一次并复用——否则每请求 new client 会泄漏
-    # httpx 连接池/FD,高负载下耗尽假死。
-    state["http"] = None
-    state["openai_embed"] = None
-    if EMBED_SERVICE_URL:
-        import httpx
-
-        state["http"] = httpx.Client(timeout=30.0)
-    elif EMBED_PROVIDER == "openai":
-        from openai import OpenAI
-
-        state["openai_embed"] = OpenAI(base_url=EMBED_OPENAI_BASE_URL or None)
+    # query embedder 在此初始化一次并复用(内部持有 httpx/OpenAI client)——否则每请求
+    # new client 会泄漏连接池/FD,高负载下耗尽假死。后端选择集中在 make_query_embedder。
+    state["query_embedder"] = make_query_embedder(
+        service_url=EMBED_SERVICE_URL,
+        provider=EMBED_PROVIDER,
+        model_name=EMBED_MODEL,
+        openai_base_url=EMBED_OPENAI_BASE_URL,
+        query_prefix=QUERY_PREFIX,
+        local_model=state["model"],
+    )
     if VECTOR_BACKEND == "qdrant":
         from qdrant_client import QdrantClient
 
@@ -115,8 +114,7 @@ async def lifespan(app: FastAPI):
             kwargs={"autocommit": True},
         )
     yield
-    if state.get("http"):
-        state["http"].close()
+    state["query_embedder"].close()
     if VECTOR_BACKEND == "qdrant":
         state["qdrant"].close()
     else:
@@ -206,31 +204,8 @@ def embed_query(query: str) -> list[float]:
         backend = "embed-service" if EMBED_SERVICE_URL else EMBED_PROVIDER
         span.set_attribute("embed.backend", backend)
         span.set_attribute("embed.model", EMBED_MODEL)
-        if EMBED_SERVICE_URL:
-            import httpx
-
-            # 复用 lifespan 里的共享 client(httpx 自动注入 traceparent 串联 rag→embed-service)
-            try:
-                resp = state["http"].post(
-                    EMBED_SERVICE_URL.rstrip("/") + "/embed",
-                    json={"texts": [query], "kind": "query"},
-                )
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                code = e.response.status_code
-                # embed-service 4xx(请求过大/非法)是调用方问题 → 透传 4xx,不当 500;
-                # 429/5xx 是服务端不可用 → 503。
-                if code < 500 and code != 429:
-                    raise HTTPException(status_code=400, detail=f"embed 请求被拒({code})") from e
-                raise HTTPException(status_code=503, detail="embed-service 暂不可用") from e
-            except httpx.RequestError as e:
-                raise HTTPException(status_code=503, detail="embed-service 不可达") from e
-            return resp.json()["embeddings"][0]
-        if EMBED_PROVIDER == "openai":
-            # 复用 lifespan 里的共享 OpenAI client(底层 httpx,traceparent 自动串联)
-            resp = state["openai_embed"].embeddings.create(model=EMBED_MODEL, input=[query])
-            return resp.data[0].embedding
-        return state["model"].encode(QUERY_PREFIX + query, normalize_embeddings=True).tolist()
+        # 复用 lifespan 初始化的共享 embedder(后端选择/错误映射都在 embedding.py)
+        return state["query_embedder"].embed(query)
 
 
 def retrieve(query: str, tenant_id: str, top_k: int, status: str | None) -> list[dict]:
