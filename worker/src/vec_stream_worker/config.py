@@ -65,6 +65,9 @@ class Config:
     embed_openai_base_url: str = field(
         default_factory=lambda: os.getenv("EMBED_OPENAI_BASE_URL", "")
     )
+    embed_egress_allowed: bool = field(
+        default_factory=lambda: os.getenv("EMBED_EGRESS_ALLOWED", "false").lower() == "true"
+    )
     # M2:启动时校验配置字段确实存在于源表(改列/删列快速失败,不静默用错数据)
     schema_check: bool = field(
         default_factory=lambda: os.getenv("SCHEMA_CHECK", "true").lower() == "true"
@@ -138,7 +141,13 @@ class Config:
                 raise ValueError(
                     "APP_ENV=production 且 VECTOR_BACKEND=qdrant 时必须设置 QDRANT_API_KEY"
                 )
-            if self.embed_provider == "openai" and not os.getenv("OPENAI_API_KEY"):
-                raise ValueError(
-                    "APP_ENV=production 且 EMBED_PROVIDER=openai 时必须设置 OPENAI_API_KEY"
-                )
+            if self.embed_provider == "openai":
+                if not self.embed_egress_allowed:
+                    raise ValueError(
+                        "APP_ENV=production 且 EMBED_PROVIDER=openai 时必须设置 "
+                        "EMBED_EGRESS_ALLOWED=true"
+                    )
+                if not os.getenv("OPENAI_API_KEY"):
+                    raise ValueError(
+                        "APP_ENV=production 且 EMBED_PROVIDER=openai 时必须设置 OPENAI_API_KEY"
+                    )

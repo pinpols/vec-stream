@@ -11,19 +11,14 @@ catalog/conf 由 run.sh 按引擎注入。
 import os
 import sys
 
+from lakehouse_logic import parse_query_key_args
 from pyspark.sql import SparkSession
 
 
 def main() -> None:
     engine = sys.argv[1]
     table = sys.argv[2]
-    tenant_id = "default"
-    pk = None
-    if len(sys.argv) == 4:
-        pk = sys.argv[3]
-    elif len(sys.argv) > 4:
-        tenant_id = sys.argv[3]
-        pk = sys.argv[4]
+    tenant_id, pk = parse_query_key_args(sys.argv[3:])
     spark = SparkSession.builder.appName(f"query-{engine}-{table}").getOrCreate()
 
     if engine == "iceberg":

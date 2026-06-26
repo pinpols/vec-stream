@@ -346,12 +346,7 @@ def healthz(response: Response):
         deps_ok = False
     if not deps_ok:
         response.status_code = 503
-    return {
-        "status": "ok" if deps_ok else "degraded",
-        "rerank": RERANK_ENABLED,
-        "backend": VECTOR_BACKEND,
-        "llm_ready": llm_available(),
-    }
+    return {"status": "ok" if deps_ok else "degraded"}
 
 
 @app.get("/stats")

@@ -21,6 +21,7 @@ class FakeCfg:
     embed_service_max_batch = 64
     embed_provider = "local"
     embed_openai_base_url = ""
+    embed_egress_allowed = False
 
 
 def _fake_openai(monkeypatch, captured):
@@ -55,6 +56,7 @@ def test_make_embedder_openai(monkeypatch):
     cfg.embed_provider = "openai"
     cfg.embed_model = "text-embedding-3-small"
     cfg.embed_openai_base_url = "https://api.openai.com/v1"
+    cfg.embed_egress_allowed = True
     e = make_embedder(cfg)
     assert isinstance(e, OpenAIEmbedder)
     out = e.embed_passages(["a", "b"])
@@ -68,7 +70,19 @@ def test_openai_embedder_empty(monkeypatch):
     _fake_openai(monkeypatch, captured)
     cfg = FakeCfg()
     cfg.embed_provider = "openai"
+    cfg.embed_egress_allowed = True
     assert make_embedder(cfg).embed_passages([]) == []
+
+
+def test_make_embedder_openai_requires_explicit_egress_allowance(monkeypatch):
+    captured = {}
+    _fake_openai(monkeypatch, captured)
+    cfg = FakeCfg()
+    cfg.embed_provider = "openai"
+    cfg.embed_egress_allowed = False
+
+    with pytest.raises(RuntimeError, match="EMBED_EGRESS_ALLOWED=true"):
+        make_embedder(cfg)
 
 
 def test_make_embedder_http_when_url_set(monkeypatch):

@@ -8,7 +8,9 @@
 #   docker compose -f docker-compose.yml -f docker-compose.lake.yml run --rm spark-lake iceberg article
 # 查询:
 #   ... run --rm spark-lake query-hudi article [id]
+#   ... run --rm spark-lake query-hudi article <tenant_id> <id>
 #   ... run --rm spark-lake query-iceberg article [id]
+#   ... run --rm spark-lake query-iceberg article <tenant_id> <id>
 services:
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z

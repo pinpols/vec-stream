@@ -258,7 +258,7 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 | 向量库 | pgvector + RLS,Qdrant 可切 | Qdrant collection 蓝绿 / 托管向量库 |
 | RAG 服务 | Python(FastAPI),/search + /ask + rerank | API gateway、限流、审计日志 |
 | Lakehouse | Spark local runner 写 Hudi + Iceberg | Spark on Kubernetes/YARN/托管 Spark |
-| 生成模型 | OpenAI 兼容 API(`LLM_EGRESS_ALLOWED=true` 后启用;`OPENAI_BASE_URL` 可指 agent-ctl 网关 / OpenAI / DeepSeek / 通义 / Ollama / vLLM) | 网关路由、降级、成本治理 |
+| Embedding / 生成模型 | OpenAI 兼容 API(`EMBED_EGRESS_ALLOWED=true` / `LLM_EGRESS_ALLOWED=true` 后启用;`*_BASE_URL` 可指 agent-ctl 网关 / OpenAI / DeepSeek / 通义 / Ollama / vLLM) | 网关路由、降级、成本治理 |
 | 质量评估 | `eval/` retrieval/generation/reconcile | 发布前强制质量门禁 |
 
 ---

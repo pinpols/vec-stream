@@ -55,6 +55,7 @@ bash -n \
 
 echo "== python syntax: spark-lake =="
 python3 -m py_compile spark-lake/*.py
+python3 -m unittest discover -s spark-lake/tests
 
 echo "== compose host ports are loopback-bound =="
 python3 - <<'PY'

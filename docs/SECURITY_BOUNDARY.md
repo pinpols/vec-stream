@@ -15,6 +15,7 @@
   - `VECTOR_BACKEND=qdrant` 但未设置 `QDRANT_API_KEY`
 - **跨租户源库约束**:`comment(tenant_id, article_id)` 外键指向 `article(tenant_id, id)`,防止跨租户脏引用进入跨表文档。
 - **Qdrant API key 透传**:worker/rag 都支持 `QDRANT_API_KEY`;本地可不设,生产必须设。
+- **Embedding 出境门闸**:`EMBED_PROVIDER=openai` 会把源文档发给 OpenAI-compatible embeddings 端点,默认不可用;必须显式设置 `EMBED_EGRESS_ALLOWED=true`。
 - **LLM 出境门闸**:`/ask` 会把召回内容发给 OpenAI-compatible 端点,默认不可用;必须显式设置 `LLM_EGRESS_ALLOWED=true` 且配置 `OPENAI_API_KEY`。`/search` 不依赖 LLM,可保持纯内网检索。
 
 ## 仍然不是生产边界的组件
@@ -37,6 +38,6 @@
 5. Iceberg catalog 换成带认证的 Nessie/Polaris/自建 REST catalog。
 6. Grafana/Prometheus/Jaeger/Spark UI 进入受控管理网。
 7. Secret manager 替代 `.env` 文件。
-8. 明确 LLM 数据出境策略:仅允许受控网关或合规 provider,并为 `/ask` 调用保留审计日志。
+8. 明确 embedding / LLM 数据出境策略:仅允许受控网关或合规 provider,并为外部调用保留审计日志。
 
 开发机要对局域网开放端口时,必须显式改 compose 端口绑定;这属于越过本仓库默认安全边界。

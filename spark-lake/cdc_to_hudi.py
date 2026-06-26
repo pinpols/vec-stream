@@ -7,6 +7,7 @@ table=<name>:单表。STREAM_MODE=true 走 Structured Streaming,否则批量。
 import os
 import sys
 
+from lakehouse_logic import EVENT_POS_FORMAT, normalize_hudi_record_key
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import coalesce, col, countDistinct, format_string, from_json, lit, when
 from pyspark.sql.types import LongType, StringType, StructField, StructType
@@ -79,7 +80,7 @@ def _flatten(df_kafka, cols, envelope):
         # Hudi 只能配置单字段 precombine,用零填充字符串拼 (lsn_or_ts,offset),
         # 保留 tie-breaker 且避免 lsn*1e6+offset 产生 long overflow。
         format_string(
-            "%020d:%020d", coalesce(col("e.source.lsn"), col("e.ts_ms"), lit(0)), col("_off")
+            EVENT_POS_FORMAT, coalesce(col("e.source.lsn"), col("e.ts_ms"), lit(0)), col("_off")
         ).alias("_event_pos"),
         is_del.alias("_hoodie_is_deleted"),
     ).where(col("id").isNotNull())
@@ -174,7 +175,7 @@ def _assert_hudi_table_compatible(spark, base_path, opts):
         or props.get("hoodie.datasource.write.recordkey.field")
         or ""
     )
-    normalized_key = existing_key.replace(" ", "").strip("[]")
+    normalized_key = normalize_hudi_record_key(existing_key)
     if not normalized_key:
         raise RuntimeError(
             f"Existing Hudi table at {base_path} has no readable record key in "

@@ -65,6 +65,10 @@ def make_embedder(cfg):
             max_batch=getattr(cfg, "embed_service_max_batch", 64),
         )
     if getattr(cfg, "embed_provider", "local") == "openai":
+        if not getattr(cfg, "embed_egress_allowed", False):
+            raise RuntimeError(
+                "EMBED_EGRESS_ALLOWED=true 未配置,拒绝向 OpenAI-compatible embeddings 端点发送源文档"
+            )
         log.info("embedding 后端: OpenAI 兼容 %s", cfg.embed_model)
         return OpenAIEmbedder(
             cfg.embed_model,

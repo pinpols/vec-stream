@@ -4,8 +4,8 @@
 #   run.sh iceberg <table>         批量:cdc.public.<table> → Iceberg(MERGE INTO)
 #   run.sh hudi-stream <table>     连续流:Structured Streaming → Hudi
 #   run.sh iceberg-stream <table>  连续流:Structured Streaming → Iceberg
-#   run.sh query-hudi <table> [id]
-#   run.sh query-iceberg <table> [id]
+#   run.sh query-hudi <table> [id] | <table> <tenant_id> <id>
+#   run.sh query-iceberg <table> [id] | <table> <tenant_id> <id>
 set -euo pipefail
 
 MODE="${1:-}"; shift || true
