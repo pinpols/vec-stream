@@ -50,6 +50,15 @@ class QdrantSink:
                     field_schema=models.PayloadSchemaType.KEYWORD,
                 )
             log.info("created qdrant collection %s (dim=%d, cosine)", collection, dim)
+        else:
+            # 已存在的 collection 也要校验维度:换模型/维度后旧 collection 会静默接受
+            # 错维向量、召回错误且无报错。dim 不一致直接 fail-fast,逼蓝绿重建。
+            existing = self.client.get_collection(collection).config.params.vectors.size
+            if existing != dim:
+                raise RuntimeError(
+                    f"Qdrant collection {collection} 维度={existing} 与 EMBED_DIM={dim} 不一致;"
+                    f"换模型/维度需蓝绿重建新 collection,不能在旧索引上切"
+                )
 
     def _record_offset(self, offset_ref: tuple[str, int, int] | None) -> None:
         """best-effort 把已处理 offset 记进 PG 账本(单调推进)。
@@ -149,14 +158,20 @@ class QdrantSink:
         metadata: dict,
         offset_ref: tuple[str, int, int] | None = None,
     ) -> int:
+        # set_payload 对 0 命中是静默 no-op;先 count,无匹配 point 时返回 0,
+        # 让调用方回退到全量 upsert,避免"刷新成功"假象掩盖向量缺失。
+        flt = _row_filter(tenant_id, source_table, source_pk)
+        cnt = self.client.count(self.collection, count_filter=flt, exact=True).count
+        if cnt == 0:
+            return 0
         self.client.set_payload(
             collection_name=self.collection,
             payload={"status": metadata.get("status"), "title": metadata.get("title")},
-            points=_row_filter(tenant_id, source_table, source_pk),
+            points=flt,
             wait=True,
         )
         self._record_offset(offset_ref)
-        return 1
+        return cnt
 
     def delete_row(
         self,

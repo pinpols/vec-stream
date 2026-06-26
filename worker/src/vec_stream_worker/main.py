@@ -15,10 +15,13 @@
 
 import json
 import logging
+import math
+import re
 import signal
 import sys
 import time
 
+import httpx
 import psycopg
 from confluent_kafka import Consumer, KafkaError, Producer
 from qdrant_client.http.exceptions import ResponseHandlingException
@@ -31,6 +34,9 @@ TRANSIENT_ERRORS = (
     ResponseHandlingException,
     ConnectionError,
     OSError,
+    # embed-service / OpenAI 走 httpx:连接失败/超时是基础设施瞬时故障,应无限退避重试
+    # 而非误判为数据错误进 DLQ。HTTPStatusError(429/5xx 过载)同理在 handle_message 里判。
+    httpx.TransportError,
 )
 
 from .chunker import split_text
@@ -73,8 +79,19 @@ def _event_pk(event: dict, table: str, cfg: Config):
     return image.get(pk_field)
 
 
+def _redact(text) -> str:
+    """脱敏异常/日志里的凭据:psycopg 报错常带完整 DSN(含密码),会写进 DLQ header、
+    PG archive、stdout 三处。抹掉 password=... 和 ://user:pass@ 形式。"""
+    s = str(text)
+    s = re.sub(r"(?i)(password\s*=\s*)\S+", r"\1***", s)
+    s = re.sub(r"(://[^:/\s]+:)[^@/\s]+(@)", r"\1***\2", s)
+    return s
+
+
 def build_source_text(after: dict, fields: list[str]) -> str:
-    return "\n".join(str(after[f]) for f in fields if after.get(f))
+    # 只跳过 None(列缺失/为空),保留 0/False/""——否则数值零/布尔假/空串字段被静默
+    # 丢出 embedding 文本,导致 hash 漂移 + 内容缺失且无报错。
+    return "\n".join(str(after[f]) for f in fields if after.get(f) is not None)
 
 
 def process_event(
@@ -85,6 +102,7 @@ def process_event(
     sink,
     source_db=None,
     offset_ref: tuple[str, int, int] | None = None,
+    _depth: int = 0,
 ) -> str:
     """处理单条 CDC 事件,返回动作标签
     (upserted/skipped/metadata_refreshed/deleted/ignored),便于测试与统计。
@@ -99,6 +117,10 @@ def process_event(
     # 子表:自身不进向量库,任何变更(含删除)都触发父行重新 embed
     parent = table_cfg.get("reembed_parent")
     if parent:
+        if _depth >= 2:
+            # 防误配链式/环形 reembed_parent(A→B→A)导致无限递归栈溢出卡死分区
+            log.warning("%s reembed_parent 递归过深(_depth=%d),ignore", table, _depth)
+            return "ignored"
         if source_db is None:
             log.warning("%s 配置了 reembed_parent 但无 source_db,ignore", table)
             return "ignored"
@@ -121,6 +143,7 @@ def process_event(
             sink,
             source_db,
             offset_ref=offset_ref,
+            _depth=_depth + 1,
         )
 
     pk_field = table_cfg.get("pk", "id")
@@ -145,9 +168,12 @@ def process_event(
             after = current
         tenant = after.get("tenant_id", "default")
         source_text = build_source_text(after, table_cfg["fields"])
-        if not source_text:
-            log.info("%s pk=%s empty source_text, ignore", table, pk)
-            return "ignored"
+        if not source_text.strip():
+            # 行还在但内容被清空(如 UPDATE 把正文置空):必须删掉旧向量,否则留下
+            # 检索得到的"幽灵向量"(指向已无内容的源行)。区别于源行已删(上面已处理)。
+            deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
+            log.info("%s pk=%s 内容清空,删除旧向量 %d 条", table, pk, deleted)
+            return "deleted"
         # 跨表反查:关联文本追加进 source_text(参与 hash,关联数据变了也会重 embed);
         # 反查必须带 tenant 条件,防跨租户数据混入文档
         enrich_sql = table_cfg.get("enrich_sql")
@@ -167,11 +193,18 @@ def process_event(
         }
         # hash 去重:文本未变只刷 metadata(status 等过滤字段必须跟上),跳过最贵的 embedding
         if sink.get_text_hash(tenant, table, str(pk)) == new_hash:
-            sink.update_metadata(tenant, table, str(pk), metadata, offset_ref=offset_ref)
-            log.info("%s pk=%s hash unchanged, metadata refreshed (op=%s)", table, pk, op)
-            return "metadata_refreshed"
+            n = sink.update_metadata(tenant, table, str(pk), metadata, offset_ref=offset_ref)
+            if n > 0:
+                log.info("%s pk=%s hash unchanged, metadata refreshed (op=%s)", table, pk, op)
+                return "metadata_refreshed"
+            # hash 命中但目标向量已不存在(并发删/丢失):回退全量 embed+upsert,别假装刷新成功
+            log.warning("%s pk=%s hash 命中但向量缺失,回退全量 upsert", table, pk)
         chunks = split_text(source_text, cfg.chunk_size, cfg.chunk_overlap)
         embeddings = embedder.embed_passages(chunks)
+        # 拒绝 NaN/Inf 向量(模型 bug/量化误差):pgvector 文本字面量会写坏、Qdrant 召回失真,
+        # 当数据性错误进 DLQ 而非静默写入垃圾向量。
+        if any(not all(math.isfinite(x) for x in emb) for emb in embeddings):
+            raise ValueError(f"{table} pk={pk} embedding 含 NaN/Inf,拒绝写入")
         CHUNKS_EMBEDDED.inc(len(chunks))
         sink.upsert_row(
             tenant_id=tenant,
@@ -234,6 +267,31 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
                 if event.get("ts_ms"):
                     SYNC_DELAY.observe(max(0.0, time.time() - event["ts_ms"] / 1000))
             return
+        except httpx.HTTPStatusError as e:
+            # embed-service/OpenAI 的 HTTP 错误码分流:429 限流 + 5xx 过载=瞬时,无限退避;
+            # 4xx 客户端错误(413 过大/422 非法)=数据性,有限重试后 DLQ。
+            if e.response.status_code in (429, 500, 502, 503, 504):
+                transient_attempts += 1
+                wait = min(30.0, cfg.retry_backoff_s * (2 ** min(transient_attempts, 5)))
+                log.warning(
+                    "embed http %s (attempt %d), retry in %.0fs",
+                    e.response.status_code,
+                    transient_attempts,
+                    wait,
+                )
+                time.sleep(wait)
+                continue
+            last_err = e
+            data_attempts += 1
+            log.warning(
+                "attempt %d/%d failed (http %s)",
+                data_attempts,
+                cfg.max_retries,
+                e.response.status_code,
+            )
+            if data_attempts >= cfg.max_retries:
+                break
+            time.sleep(cfg.retry_backoff_s * (2 ** (data_attempts - 1)))
         except TRANSIENT_ERRORS as e:
             transient_attempts += 1
             wait = min(30.0, cfg.retry_backoff_s * (2 ** min(transient_attempts, 5)))
@@ -241,17 +299,17 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
                 "transient infra error (attempt %d), retry in %.0fs: %s",
                 transient_attempts,
                 wait,
-                e,
+                _redact(e),
             )
             time.sleep(wait)
         except Exception as e:  # noqa: BLE001 —— 数据性错误,有限重试
             last_err = e
             data_attempts += 1
-            log.warning("attempt %d/%d failed: %s", data_attempts, cfg.max_retries, e)
+            log.warning("attempt %d/%d failed: %s", data_attempts, cfg.max_retries, _redact(e))
             if data_attempts >= cfg.max_retries:
                 break
             time.sleep(cfg.retry_backoff_s * (2 ** (data_attempts - 1)))
-    log.error("retries exhausted, send to DLQ %s: %s", cfg.dlq_topic, last_err)
+    log.error("retries exhausted, send to DLQ %s: %s", cfg.dlq_topic, _redact(last_err))
     DLQ_SENT.inc()
     # 透传 replay_count:若本条是 dlq_replay 回投的消息(带 replay_count header),
     # 失败再进 DLQ 时计数随之累加,达上限后由 dlq_replay 归档,不再无限重投。
@@ -265,7 +323,7 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
             "source_topic": msg.topic(),
             "source_partition": str(msg.partition()),
             "source_offset": str(msg.offset()),
-            "error": str(last_err)[:500],
+            "error": _redact(last_err)[:500],
             "replay_count": replay_count,
         },
     )

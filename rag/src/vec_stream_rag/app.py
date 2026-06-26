@@ -8,7 +8,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
@@ -89,6 +89,18 @@ async def lifespan(app: FastAPI):
     # 用远程 embedding(service / openai)时不在本进程加载 embedding 模型(解耦省内存)
     state["model"] = SentenceTransformer(EMBED_MODEL) if _USE_LOCAL_EMBED else None
     state["reranker"] = Reranker(RERANK_MODEL) if RERANK_ENABLED else None
+    # 远程 embedding 的客户端在此初始化一次并复用——否则每请求 new client 会泄漏
+    # httpx 连接池/FD,高负载下耗尽假死。
+    state["http"] = None
+    state["openai_embed"] = None
+    if EMBED_SERVICE_URL:
+        import httpx
+
+        state["http"] = httpx.Client(timeout=30.0)
+    elif EMBED_PROVIDER == "openai":
+        from openai import OpenAI
+
+        state["openai_embed"] = OpenAI(base_url=EMBED_OPENAI_BASE_URL or None)
     if VECTOR_BACKEND == "qdrant":
         from qdrant_client import QdrantClient
 
@@ -103,6 +115,8 @@ async def lifespan(app: FastAPI):
             kwargs={"autocommit": True},
         )
     yield
+    if state.get("http"):
+        state["http"].close()
     if VECTOR_BACKEND == "qdrant":
         state["qdrant"].close()
     else:
@@ -195,20 +209,26 @@ def embed_query(query: str) -> list[float]:
         if EMBED_SERVICE_URL:
             import httpx
 
-            # httpx 自动埋点会在此出站请求注入 traceparent → 串联 rag→embed-service。
-            resp = httpx.post(
-                EMBED_SERVICE_URL.rstrip("/") + "/embed",
-                json={"texts": [query], "kind": "query"},
-                timeout=30.0,
-            )
-            resp.raise_for_status()
+            # 复用 lifespan 里的共享 client(httpx 自动注入 traceparent 串联 rag→embed-service)
+            try:
+                resp = state["http"].post(
+                    EMBED_SERVICE_URL.rstrip("/") + "/embed",
+                    json={"texts": [query], "kind": "query"},
+                )
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                # embed-service 4xx(请求过大/非法)是调用方问题 → 透传 4xx,不当 500;
+                # 429/5xx 是服务端不可用 → 503。
+                if code < 500 and code != 429:
+                    raise HTTPException(status_code=400, detail=f"embed 请求被拒({code})") from e
+                raise HTTPException(status_code=503, detail="embed-service 暂不可用") from e
+            except httpx.RequestError as e:
+                raise HTTPException(status_code=503, detail="embed-service 不可达") from e
             return resp.json()["embeddings"][0]
         if EMBED_PROVIDER == "openai":
-            from openai import OpenAI
-
-            # openai SDK 底层走 httpx → 同样自动注入 traceparent 串联 rag→embedding 网关。
-            client = OpenAI(base_url=EMBED_OPENAI_BASE_URL or None)
-            resp = client.embeddings.create(model=EMBED_MODEL, input=[query])
+            # 复用 lifespan 里的共享 OpenAI client(底层 httpx,traceparent 自动串联)
+            resp = state["openai_embed"].embeddings.create(model=EMBED_MODEL, input=[query])
             return resp.data[0].embedding
         return state["model"].encode(QUERY_PREFIX + query, normalize_embeddings=True).tolist()
 
@@ -312,12 +332,24 @@ def apply_rerank(query: str, hits: list[dict], top_n: int) -> list[dict]:
 
 
 @app.get("/healthz")
-def healthz():
+def healthz(response: Response):
+    # 真探测向量后端可用性,而非永远返回 ok——否则 K8s liveness 探针在依赖宕机时
+    # 仍显示健康,流量继续打入产生大量 500。不回 llm_provider(含网关 URL,无鉴权别泄漏)。
+    deps_ok = True
+    try:
+        if VECTOR_BACKEND == "qdrant":
+            state["qdrant"].get_collections()
+        else:
+            with state["pool"].connection() as conn:
+                conn.execute("SELECT 1")
+    except Exception:  # noqa: BLE001
+        deps_ok = False
+    if not deps_ok:
+        response.status_code = 503
     return {
-        "status": "ok",
+        "status": "ok" if deps_ok else "degraded",
         "rerank": RERANK_ENABLED,
         "backend": VECTOR_BACKEND,
-        "llm_provider": active_provider(),
         "llm_ready": llm_available(),
     }
 

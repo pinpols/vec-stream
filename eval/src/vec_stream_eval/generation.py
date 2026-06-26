@@ -125,10 +125,11 @@ class GenerationReport:
 def evaluate_generation(samples: list[dict]) -> GenerationReport:
     """纯计算核心:samples = [{query, tenant_id, answer, sources:[...]}]。
 
-    与 HTTP 解耦便于单测。当前用轻量指标;装了 ragas 时 backend 标 ragas
-    (RAGAS 真打分需 LLM judge,这里仍以轻量指标兜底保证离线可算)。
+    与 HTTP 解耦便于单测。**实际始终计算轻量指标**(citation_coverage /
+    cited_sentence_ratio);RAGAS 的 faithfulness/answer_relevancy 尚未接入打分路径,
+    故 backend 诚实标 "lightweight",不冒充 ragas(避免误以为用了 LLM-judge 指标)。
     """
-    backend = "ragas" if ragas_available() else "lightweight"
+    backend = "lightweight"
     per: list[GenQueryResult] = []
     for s in samples:
         sources = s.get("sources") or []

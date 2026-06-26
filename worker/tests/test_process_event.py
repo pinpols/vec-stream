@@ -73,6 +73,68 @@ def test_product_table_uses_its_own_fields():
     assert sink.upserts[0]["metadata"]["title"] == "商品A"
 
 
+# ── 审计 P0 回归 ──
+
+
+def test_build_source_text_keeps_falsy_drops_only_none():
+    from vec_stream_worker.main import build_source_text
+
+    assert build_source_text({"a": 0, "b": "x"}, ["a", "b"]) == "0\nx"  # 整数 0 保留
+    assert build_source_text({"a": "", "b": "x"}, ["a", "b"]) == "\nx"  # 空串保留
+    assert build_source_text({"a": None, "b": "x"}, ["a", "b"]) == "x"  # 只 None 丢弃
+
+
+def test_update_to_empty_content_deletes_ghost_vectors():
+    # 行还在但内容清空(title/body 都置 None)→ 删旧向量,不留幽灵向量
+    sink = FakeSink()
+    action = process_event(
+        ev("u", after={"id": 1, "tenant_id": "t1", "title": None, "body": None}),
+        "article",
+        CFG,
+        FakeEmbedder(),
+        sink,
+    )
+    assert action == "deleted"
+    assert sink.deletes == [("t1", "article", "1")]
+    assert sink.upserts == []
+
+
+def test_nan_embedding_rejected_not_written():
+    class NanEmbedder:
+        def embed_passages(self, texts):
+            return [[float("nan")] * 4 for _ in texts]
+
+    sink = FakeSink()
+    try:
+        process_event(
+            ev("c", after={"id": 1, "tenant_id": "t", "title": "x", "body": "y"}),
+            "article",
+            CFG,
+            NanEmbedder(),
+            sink,
+        )
+        raise AssertionError("NaN 向量应被拒绝")
+    except ValueError:
+        pass
+    assert sink.upserts == []  # 垃圾向量没落库
+
+
+def test_update_metadata_zero_falls_back_to_upsert():
+    # hash 命中但向量缺失(update_metadata 返 0)→ 回退全量 upsert,不假装刷新成功
+    after = {"id": 1, "tenant_id": "t", "title": "标题", "body": "正文"}
+
+    class ZeroMetaSink(FakeSink):
+        def update_metadata(self, *a, **k):
+            self.metadata_updates.append(a)
+            return 0
+
+    sink = ZeroMetaSink(stored_hash=text_hash("标题\n正文"))
+    action = process_event(ev("u", after=after), "article", CFG, FakeEmbedder(), sink)
+    assert action == "upserted"
+    assert len(sink.metadata_updates) == 1  # 试过刷新
+    assert len(sink.upserts) == 1  # 回退到全量 upsert
+
+
 def test_unconfigured_table_ignored():
     sink = FakeSink()
     action = process_event(

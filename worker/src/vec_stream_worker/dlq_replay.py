@@ -93,7 +93,13 @@ def replay(cfg: Config, limit: int | None, dry_run: bool) -> int:
                         error,
                     )
                 else:
-                    _archive(cfg.pg_dsn, msg, source_topic, replay_count, error)
+                    try:
+                        _archive(cfg.pg_dsn, msg, source_topic, replay_count, error)
+                    except Exception as e:  # noqa: BLE001
+                        # 归档失败(表缺失/DB 故障)不能拖垮整个 replay 进程;不 commit
+                        # 该消息(留待下次重试归档),跳过继续处理其余消息。
+                        log.error("archive failed offset=%s,跳过不 commit: %s", msg.offset(), e)
+                        continue
                     consumer.commit(msg)
                     log.warning(
                         "archived offset=%s (重投 %d 次仍失败) error=%s",

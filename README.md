@@ -70,6 +70,12 @@ vec-stream/
 
 Embedding 用本地 **BAAI/bge-small-zh-v1.5**(512 维,免 key,首次运行自动下载模型)。
 
+> **一键容器化(推荐快速上手)**:worker + rag 也可随 apps overlay 一起容器化起,免开多终端:
+> ```bash
+> docker compose -f docker-compose.yml -f docker-compose.apps.yml up -d
+> ```
+> 想本地改代码热跑、或看模型下载日志,再用下面的 `uv run` 分进程方式。
+
 ```bash
 # Vector Sync Worker:消费 CDC → embedding → 写 pgvector
 cd worker

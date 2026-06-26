@@ -112,6 +112,24 @@ class Config:
             raise ValueError(f"VECTOR_BACKEND 必须是 pgvector|qdrant,得到 {self.vector_backend}")
         if self.embed_dim <= 0 or self.max_doc_chars <= 0:
             raise ValueError("EMBED_DIM / MAX_DOC_CHARS 必须为正数")
+        # 表配置校验(TABLES_JSON 是运行时配置,启动期快速失败而非运行时崩)
+        for name, tcfg in self.tables.items():
+            if tcfg.get("reembed_parent"):
+                continue  # 子表不进向量库,无 fields/enrich_sql 要求
+            if not tcfg.get("fields"):
+                raise ValueError(
+                    f"表 {name} 的 fields 不能为空(否则 metadata.title 取 fields[0] 会崩)"
+                )
+            esql = tcfg.get("enrich_sql")
+            if esql:
+                # enrich_sql 在 vs_worker 权限下执行,限制为单条 SELECT 且必带租户条件,
+                # 防止误配/被篡改的 TABLES_JSON 注入任意 SQL 或泄漏跨租户数据。
+                if not esql.strip().lower().startswith("select") or ";" in esql:
+                    raise ValueError(f"表 {name} 的 enrich_sql 必须是单条 SELECT(禁分号/DDL/DML)")
+                if "%(tenant)s" not in esql:
+                    raise ValueError(
+                        f"表 {name} 的 enrich_sql 必须带 %(tenant)s 条件(防跨租户混入)"
+                    )
         if os.getenv("APP_ENV", "").lower() in {"prod", "production"}:
             weak_dsn_markers = ("change-me", "vs_worker:vs_worker@", "postgres:postgres@")
             if any(marker in self.pg_dsn for marker in weak_dsn_markers):
@@ -119,4 +137,8 @@ class Config:
             if self.vector_backend == "qdrant" and not self.qdrant_api_key:
                 raise ValueError(
                     "APP_ENV=production 且 VECTOR_BACKEND=qdrant 时必须设置 QDRANT_API_KEY"
+                )
+            if self.embed_provider == "openai" and not os.getenv("OPENAI_API_KEY"):
+                raise ValueError(
+                    "APP_ENV=production 且 EMBED_PROVIDER=openai 时必须设置 OPENAI_API_KEY"
                 )

@@ -43,9 +43,22 @@ def no_real_startup(monkeypatch):
     monkeypatch.setattr(appmod, "VECTOR_BACKEND", "pgvector")
     monkeypatch.setattr(appmod, "check_index_metadata", lambda dsn: None)
 
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a, **k):  # healthz 探针 SELECT 1
+            return None
+
     class _FakePool:
         def __init__(self, *a, **k):
             pass
+
+        def connection(self):
+            return _FakeConn()
 
         def close(self):
             pass
