@@ -113,130 +113,149 @@ def process_event(
     (upserted/skipped/metadata_refreshed/deleted/ignored),便于测试与统计。
 
     offset_ref=(topic, partition, offset):当前消息的 Kafka 坐标,透传给 sink
-    与向量写入同事务写进 processed_offsets 处理账本(M1 审计闭环)。"""
+    与向量写入同事务写进 processed_offsets 处理账本(M1 审计闭环)。
+    _depth 仅供 reembed_parent 递归防护,外部调用不传。"""
     table_cfg = cfg.tables.get(table)
     if table_cfg is None:
         log.info("table %s not configured, ignore", table)
         return "ignored"
-
-    # 子表:自身不进向量库,任何变更(含删除)都触发父行重新 embed
-    parent = table_cfg.get("reembed_parent")
-    if parent:
-        if _depth >= 2:
-            # 防误配链式/环形 reembed_parent(A→B→A)导致无限递归栈溢出卡死分区
-            log.warning("%s reembed_parent 递归过深(_depth=%d),ignore", table, _depth)
-            return "ignored"
-        if source_db is None:
-            log.warning("%s 配置了 reembed_parent 但无 source_db,ignore", table)
-            return "ignored"
-        row_image = event.get("after") or event.get("before") or {}
-        fk = row_image.get(parent["fk"])
-        if fk is None:
-            return "ignored"
-        parent_table = parent["table"]
-        parent_pk_field = cfg.tables.get(parent_table, {}).get("pk", "id")
-        parent_row = source_db.fetch_row(parent_table, parent_pk_field, fk)
-        if parent_row is None:
-            # 父行已删:父表自己的 op=d 事件负责清理向量
-            return "ignored"
-        log.info("%s 变更 → 重建父文档 %s pk=%s", table, parent_table, fk)
-        return process_event(
-            {"op": "u", "after": parent_row},
-            parent_table,
-            cfg,
-            embedder,
-            sink,
-            source_db,
-            offset_ref=offset_ref,
-            _depth=_depth + 1,
+    if table_cfg.get("reembed_parent"):
+        return _reembed_parent(
+            event, table, table_cfg, cfg, embedder, sink, source_db, offset_ref, _depth
         )
-
     pk_field = table_cfg.get("pk", "id")
     op = event.get("op")
-
     if op in UPSERT_OPS:
-        after = event.get("after") or {}
-        pk = after.get(pk_field)
-        if pk is None:
-            log.warning("op=%s without pk, ignore", op)
-            return "ignored"
-        # 以源库当前态为准重建文档,CDC 事件只当触发器:
-        # 同时解决 a) DLQ 重投旧 after 镜像覆盖新状态 b) 跨表反查与本表事件的乱序竞态
-        # ——无论事件新旧,落库结果始终收敛到源库当前状态。
-        if source_db is not None:
-            current = source_db.fetch_row(table, pk_field, pk)
-            if current is None:
-                tenant = after.get("tenant_id", "default")
-                deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
-                log.info("%s pk=%s 源行已不存在,清理向量 %s 条", table, pk, _chunks_str(deleted))
-                return "deleted"
-            after = current
-        tenant = after.get("tenant_id", "default")
-        source_text = build_source_text(after, table_cfg["fields"])
-        if not source_text.strip():
-            # 行还在但内容被清空(如 UPDATE 把正文置空):必须删掉旧向量,否则留下
-            # 检索得到的"幽灵向量"(指向已无内容的源行)。区别于源行已删(上面已处理)。
-            deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
-            log.info("%s pk=%s 内容清空,删除旧向量 %s 条", table, pk, _chunks_str(deleted))
-            return "deleted"
-        # 跨表反查:关联文本追加进 source_text(参与 hash,关联数据变了也会重 embed);
-        # 反查必须带 tenant 条件,防跨租户数据混入文档
-        enrich_sql = table_cfg.get("enrich_sql")
-        if enrich_sql and source_db is not None:
-            extra = source_db.query_text(enrich_sql, {"pk": pk, "tenant": tenant})
-            if extra:
-                source_text = f"{source_text}\n{extra}"
-        if len(source_text) > cfg.max_doc_chars:
-            log.warning(
-                "%s pk=%s 文本过长 %d→%d chars 截断", table, pk, len(source_text), cfg.max_doc_chars
-            )
-            source_text = source_text[: cfg.max_doc_chars]
-        new_hash = text_hash(source_text)
-        metadata = {
-            "status": after.get("status"),
-            "title": after.get(table_cfg.get("title_field", table_cfg["fields"][0])),
-        }
-        # hash 去重:文本未变只刷 metadata(status 等过滤字段必须跟上),跳过最贵的 embedding
-        if sink.get_text_hash(tenant, table, str(pk)) == new_hash:
-            n = sink.update_metadata(tenant, table, str(pk), metadata, offset_ref=offset_ref)
-            if n > 0:
-                log.info("%s pk=%s hash unchanged, metadata refreshed (op=%s)", table, pk, op)
-                return "metadata_refreshed"
-            # hash 命中但目标向量已不存在(并发删/丢失):回退全量 embed+upsert,别假装刷新成功
-            log.warning("%s pk=%s hash 命中但向量缺失,回退全量 upsert", table, pk)
-        chunks = split_text(source_text, cfg.chunk_size, cfg.chunk_overlap)
-        embeddings = embedder.embed_passages(chunks)
-        # 拒绝 NaN/Inf 向量(模型 bug/量化误差):pgvector 文本字面量会写坏、Qdrant 召回失真,
-        # 当数据性错误进 DLQ 而非静默写入垃圾向量。
-        if any(not all(math.isfinite(x) for x in emb) for emb in embeddings):
-            raise ValueError(f"{table} pk={pk} embedding 含 NaN/Inf,拒绝写入")
-        CHUNKS_EMBEDDED.inc(len(chunks))
-        sink.upsert_row(
-            tenant_id=tenant,
-            source_table=table,
-            source_pk=str(pk),
-            text_hash=new_hash,
-            chunks=chunks,
-            embeddings=embeddings,
-            metadata=metadata,
-            offset_ref=offset_ref,
+        return _handle_upsert(
+            event, table, table_cfg, pk_field, cfg, embedder, sink, source_db, offset_ref
         )
-        log.info("upserted %s pk=%s chunks=%d op=%s", table, pk, len(chunks), op)
-        return "upserted"
-
     if op == "d":
-        before = event.get("before") or {}
-        pk = before.get(pk_field)
-        if pk is None:
-            log.warning("op=d without before image, ignore: %s", event)
-            return "ignored"
-        tenant = before.get("tenant_id", "default")
-        deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
-        log.info("deleted %s pk=%s chunks=%s", table, pk, _chunks_str(deleted))
-        return "deleted"
-
+        return _handle_delete(event, table, pk_field, sink, offset_ref)
     log.info("op=%s not handled, ignore", op)
     return "ignored"
+
+
+def _reembed_parent(
+    event, table, table_cfg, cfg, embedder, sink: Sink, source_db, offset_ref, _depth
+) -> str:
+    """子表:自身不进向量库,任何变更(含删除)都触发父行重新 embed(回查源库父行)。"""
+    if _depth >= 2:
+        # 防误配链式/环形 reembed_parent(A→B→A)导致无限递归栈溢出卡死分区
+        log.warning("%s reembed_parent 递归过深(_depth=%d),ignore", table, _depth)
+        return "ignored"
+    if source_db is None:
+        log.warning("%s 配置了 reembed_parent 但无 source_db,ignore", table)
+        return "ignored"
+    parent = table_cfg["reembed_parent"]
+    row_image = event.get("after") or event.get("before") or {}
+    fk = row_image.get(parent["fk"])
+    if fk is None:
+        return "ignored"
+    parent_table = parent["table"]
+    parent_pk_field = cfg.tables.get(parent_table, {}).get("pk", "id")
+    parent_row = source_db.fetch_row(parent_table, parent_pk_field, fk)
+    if parent_row is None:
+        # 父行已删:父表自己的 op=d 事件负责清理向量
+        return "ignored"
+    log.info("%s 变更 → 重建父文档 %s pk=%s", table, parent_table, fk)
+    return process_event(
+        {"op": "u", "after": parent_row},
+        parent_table,
+        cfg,
+        embedder,
+        sink,
+        source_db,
+        offset_ref=offset_ref,
+        _depth=_depth + 1,
+    )
+
+
+def _handle_upsert(
+    event, table, table_cfg, pk_field, cfg, embedder, sink: Sink, source_db, offset_ref
+) -> str:
+    """c/r/u:以源库当前态为准重建文档(事件只当触发器),hash 去重 + embed + upsert。"""
+    op = event.get("op")
+    after = event.get("after") or {}
+    pk = after.get(pk_field)
+    if pk is None:
+        log.warning("op=%s without pk, ignore", op)
+        return "ignored"
+    # 以源库当前态为准重建文档,CDC 事件只当触发器:
+    # 同时解决 a) DLQ 重投旧 after 镜像覆盖新状态 b) 跨表反查与本表事件的乱序竞态
+    # ——无论事件新旧,落库结果始终收敛到源库当前状态。
+    if source_db is not None:
+        current = source_db.fetch_row(table, pk_field, pk)
+        if current is None:
+            tenant = after.get("tenant_id", "default")
+            deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
+            log.info("%s pk=%s 源行已不存在,清理向量 %s 条", table, pk, _chunks_str(deleted))
+            return "deleted"
+        after = current
+    tenant = after.get("tenant_id", "default")
+    source_text = build_source_text(after, table_cfg["fields"])
+    if not source_text.strip():
+        # 行还在但内容被清空(如 UPDATE 把正文置空):必须删掉旧向量,否则留下
+        # 检索得到的"幽灵向量"(指向已无内容的源行)。区别于源行已删(上面已处理)。
+        deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
+        log.info("%s pk=%s 内容清空,删除旧向量 %s 条", table, pk, _chunks_str(deleted))
+        return "deleted"
+    # 跨表反查:关联文本追加进 source_text(参与 hash,关联数据变了也会重 embed);
+    # 反查必须带 tenant 条件,防跨租户数据混入文档
+    enrich_sql = table_cfg.get("enrich_sql")
+    if enrich_sql and source_db is not None:
+        extra = source_db.query_text(enrich_sql, {"pk": pk, "tenant": tenant})
+        if extra:
+            source_text = f"{source_text}\n{extra}"
+    if len(source_text) > cfg.max_doc_chars:
+        log.warning(
+            "%s pk=%s 文本过长 %d→%d chars 截断", table, pk, len(source_text), cfg.max_doc_chars
+        )
+        source_text = source_text[: cfg.max_doc_chars]
+    new_hash = text_hash(source_text)
+    metadata = {
+        "status": after.get("status"),
+        "title": after.get(table_cfg.get("title_field", table_cfg["fields"][0])),
+    }
+    # hash 去重:文本未变只刷 metadata(status 等过滤字段必须跟上),跳过最贵的 embedding
+    if sink.get_text_hash(tenant, table, str(pk)) == new_hash:
+        n = sink.update_metadata(tenant, table, str(pk), metadata, offset_ref=offset_ref)
+        if n > 0:
+            log.info("%s pk=%s hash unchanged, metadata refreshed (op=%s)", table, pk, op)
+            return "metadata_refreshed"
+        # hash 命中但目标向量已不存在(并发删/丢失):回退全量 embed+upsert,别假装刷新成功
+        log.warning("%s pk=%s hash 命中但向量缺失,回退全量 upsert", table, pk)
+    chunks = split_text(source_text, cfg.chunk_size, cfg.chunk_overlap)
+    embeddings = embedder.embed_passages(chunks)
+    # 拒绝 NaN/Inf 向量(模型 bug/量化误差):pgvector 文本字面量会写坏、Qdrant 召回失真,
+    # 当数据性错误进 DLQ 而非静默写入垃圾向量。
+    if any(not all(math.isfinite(x) for x in emb) for emb in embeddings):
+        raise ValueError(f"{table} pk={pk} embedding 含 NaN/Inf,拒绝写入")
+    CHUNKS_EMBEDDED.inc(len(chunks))
+    sink.upsert_row(
+        tenant_id=tenant,
+        source_table=table,
+        source_pk=str(pk),
+        text_hash=new_hash,
+        chunks=chunks,
+        embeddings=embeddings,
+        metadata=metadata,
+        offset_ref=offset_ref,
+    )
+    log.info("upserted %s pk=%s chunks=%d op=%s", table, pk, len(chunks), op)
+    return "upserted"
+
+
+def _handle_delete(event, table, pk_field, sink: Sink, offset_ref) -> str:
+    """op=d:从 before 镜像取 tenant_id + PK,删除该行全部 chunk。"""
+    before = event.get("before") or {}
+    pk = before.get(pk_field)
+    if pk is None:
+        log.warning("op=d without before image, ignore: %s", event)
+        return "ignored"
+    tenant = before.get("tenant_id", "default")
+    deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
+    log.info("deleted %s pk=%s chunks=%s", table, pk, _chunks_str(deleted))
+    return "deleted"
 
 
 def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -> None:
