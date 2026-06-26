@@ -258,7 +258,7 @@ def _set_app_tenant(cur, tenant_id: str) -> None:
 def _retrieve_pgvector(
     qvec: list[float], tenant_id: str, top_k: int, status: str | None
 ) -> list[dict]:
-    vec = str(qvec)
+    vec = str(qvec)  # pgvector 文本量 [f1,f2,...];qvec 是 list[float],list.__repr__ 恰好符合
     # WHERE tenant_id 保留做双保险;真正强制隔离靠 RLS(SET app.tenant)。
     sql = """
         SELECT content, 1 - (embedding <=> %(v)s::vector) AS score,

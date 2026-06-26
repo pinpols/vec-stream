@@ -47,7 +47,7 @@ from .index_metadata import metadata_from_cfg, metadata_name_from_cfg, upsert_in
 from .logging_setup import setup_logging
 from .metrics import CHUNKS_EMBEDDED, DLQ_SENT, EVENTS, SYNC_DELAY, start_metrics
 from .schema_check import check_schema
-from .sink import make_sink
+from .sink import Sink, make_sink
 from .slot_monitor import start_monitor
 from .source_db import SourceDB
 from .tracing import (
@@ -88,6 +88,11 @@ def _redact(text) -> str:
     return s
 
 
+def _chunks_str(n: int) -> str:
+    """删除条数展示:-1 表示后端(Qdrant)不提供条数,显示 ? 而非误导的数字。"""
+    return str(n) if n >= 0 else "?"
+
+
 def build_source_text(after: dict, fields: list[str]) -> str:
     # 只跳过 None(列缺失/为空),保留 0/False/""——否则数值零/布尔假/空串字段被静默
     # 丢出 embedding 文本,导致 hash 漂移 + 内容缺失且无报错。
@@ -99,7 +104,7 @@ def process_event(
     table: str,
     cfg: Config,
     embedder,
-    sink,
+    sink: Sink,
     source_db=None,
     offset_ref: tuple[str, int, int] | None = None,
     _depth: int = 0,
@@ -163,7 +168,7 @@ def process_event(
             if current is None:
                 tenant = after.get("tenant_id", "default")
                 deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
-                log.info("%s pk=%s 源行已不存在,清理向量 %d 条", table, pk, deleted)
+                log.info("%s pk=%s 源行已不存在,清理向量 %s 条", table, pk, _chunks_str(deleted))
                 return "deleted"
             after = current
         tenant = after.get("tenant_id", "default")
@@ -172,7 +177,7 @@ def process_event(
             # 行还在但内容被清空(如 UPDATE 把正文置空):必须删掉旧向量,否则留下
             # 检索得到的"幽灵向量"(指向已无内容的源行)。区别于源行已删(上面已处理)。
             deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
-            log.info("%s pk=%s 内容清空,删除旧向量 %d 条", table, pk, deleted)
+            log.info("%s pk=%s 内容清空,删除旧向量 %s 条", table, pk, _chunks_str(deleted))
             return "deleted"
         # 跨表反查:关联文本追加进 source_text(参与 hash,关联数据变了也会重 embed);
         # 反查必须带 tenant 条件,防跨租户数据混入文档
@@ -227,7 +232,7 @@ def process_event(
             return "ignored"
         tenant = before.get("tenant_id", "default")
         deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
-        log.info("deleted %s pk=%s chunks=%d", table, pk, deleted)
+        log.info("deleted %s pk=%s chunks=%s", table, pk, _chunks_str(deleted))
         return "deleted"
 
     log.info("op=%s not handled, ignore", op)
@@ -393,6 +398,7 @@ def run() -> None:
     finally:
         consumer.close()
         sink.close()
+        embedder.close()  # HttpEmbedder/OpenAIEmbedder 的 httpx 连接池显式释放
         source_db.close()
         log.info("worker stopped")
 

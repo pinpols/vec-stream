@@ -27,6 +27,9 @@ class LocalEmbedder:
         vecs = self.model.encode(texts, normalize_embeddings=True, batch_size=32)
         return [v.tolist() for v in vecs]
 
+    def close(self) -> None:  # 进程内模型无需释放,留空实现统一接口
+        pass
+
 
 class HttpEmbedder:
     """远程 embed-service。失败抛异常,交由消费侧重试(TRANSIENT_ERRORS 含 OSError)。"""
@@ -100,6 +103,9 @@ class OpenAIEmbedder:
             resp = self._client.embeddings.create(model=self._model, input=batch)
             out.extend(d.embedding for d in resp.data)
         return out
+
+    def close(self) -> None:
+        self._client.close()  # OpenAI client 底层 httpx session
 
 
 # 兼容旧引用

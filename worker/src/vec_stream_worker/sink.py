@@ -8,13 +8,61 @@
 make_sink() 按 cfg.vector_backend 选择 pgvector / qdrant 后端,两者同接口。"""
 
 import json
+from typing import Protocol, runtime_checkable
 
 import psycopg
 
+from . import ledger
 from .ids import vector_id
 
 
-def make_sink(cfg):
+def pgvector_literal(emb: list[float]) -> str:
+    """pgvector 文本量格式 `[f1,f2,...]`。依赖 `list.__repr__` 恰好产出此格式——
+    所以 emb 必须是 list[float](embedder 已保证),不能是 numpy array(str() 带换行/科学计数会写坏)。"""
+    return str(emb)
+
+
+@runtime_checkable
+class Sink(Protocol):
+    """向量 sink 契约。VectorSink(pgvector)与 QdrantSink 都须满足——给 process_event
+    的 sink 参数加静态约束,加第三个后端(如 Milvus)漏实现方法时 mypy 立刻报。
+    返回值约定:update_metadata/delete_row 返回受影响 chunk 数,-1 表示后端不提供条数。"""
+
+    def upsert_row(
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
+        text_hash: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        metadata: dict,
+        offset_ref: tuple[str, int, int] | None = ...,
+    ) -> None: ...
+
+    def get_text_hash(self, tenant_id: str, source_table: str, source_pk: str) -> str | None: ...
+
+    def update_metadata(
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
+        metadata: dict,
+        offset_ref: tuple[str, int, int] | None = ...,
+    ) -> int: ...
+
+    def delete_row(
+        self,
+        tenant_id: str,
+        source_table: str,
+        source_pk: str,
+        offset_ref: tuple[str, int, int] | None = ...,
+    ) -> int: ...
+
+    def close(self) -> None: ...
+
+
+def make_sink(cfg) -> Sink:
     if cfg.vector_backend == "qdrant":
         from .qdrant_sink import QdrantSink
 
@@ -54,27 +102,14 @@ class VectorSink:
         offset_ref 为空则 no-op(调用方不带 offset 时退化为纯向量写入)。"""
         if offset_ref is None:
             return
-        topic, partition, last_offset = offset_ref
-        cur.execute(
-            """
-            INSERT INTO processed_offsets(topic, partition, last_offset, processed_at)
-            VALUES (%s, %s, %s, now())
-            ON CONFLICT (topic, partition) DO UPDATE
-              SET last_offset = EXCLUDED.last_offset, processed_at = now()
-              WHERE EXCLUDED.last_offset > processed_offsets.last_offset
-            """,
-            (topic, partition, last_offset),
-        )
+        cur.execute(ledger.UPSERT_SQL, offset_ref)
 
     def last_processed_offset(self, topic: str, partition: int) -> int | None:
         """账本里该 (topic, partition) 的最新已处理 offset,供测试/审计查询。"""
         try:
             conn = self._connection()
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT last_offset FROM processed_offsets " "WHERE topic=%s AND partition=%s",
-                    (topic, partition),
-                )
+                cur.execute(ledger.READ_SQL, (topic, partition))
                 row = cur.fetchone()
             conn.commit()
             return row[0] if row else None
@@ -124,7 +159,7 @@ class VectorSink:
                             text_hash,
                             chunk,
                             meta_json,
-                            str(emb),
+                            pgvector_literal(emb),
                         ),
                     )
                 # 账本与向量写入同事务提交,形成"处理一次"审计真相源

@@ -9,6 +9,7 @@ import logging
 
 from qdrant_client import QdrantClient, models
 
+from . import ledger
 from .ids import qdrant_point_id
 
 log = logging.getLogger("qdrant-sink")
@@ -61,27 +62,8 @@ class QdrantSink:
                 )
 
     def _record_offset(self, offset_ref: tuple[str, int, int] | None) -> None:
-        """best-effort 把已处理 offset 记进 PG 账本(单调推进)。
-        失败只 warn——账本是审计参考,不能拖累 Qdrant 主写入路径。"""
-        if offset_ref is None or self._ledger_dsn is None:
-            return
-        topic, partition, last_offset = offset_ref
-        try:
-            import psycopg
-
-            with psycopg.connect(self._ledger_dsn, autocommit=True) as conn:
-                conn.execute(
-                    """
-                    INSERT INTO processed_offsets(topic, partition, last_offset, processed_at)
-                    VALUES (%s, %s, %s, now())
-                    ON CONFLICT (topic, partition) DO UPDATE
-                      SET last_offset = EXCLUDED.last_offset, processed_at = now()
-                      WHERE EXCLUDED.last_offset > processed_offsets.last_offset
-                    """,
-                    (topic, partition, last_offset),
-                )
-        except Exception as e:  # noqa: BLE001 —— 账本失败不影响主流程
-            log.warning("ledger upsert failed (best-effort, ignored): %s", e)
+        """best-effort 把已处理 offset 记进 PG 账本(SQL 共享自 ledger,单调推进)。"""
+        ledger.record_best_effort(self._ledger_dsn, offset_ref, log)
 
     def last_processed_offset(self, topic: str, partition: int) -> int | None:
         """账本里该 (topic, partition) 的最新已处理 offset,供测试/审计查询。
@@ -93,7 +75,7 @@ class QdrantSink:
 
             with psycopg.connect(self._ledger_dsn, autocommit=True) as conn:
                 row = conn.execute(
-                    "SELECT last_offset FROM processed_offsets WHERE topic=%s AND partition=%s",
+                    ledger.READ_SQL,
                     (topic, partition),
                 ).fetchone()
             return row[0] if row else None
@@ -188,7 +170,7 @@ class QdrantSink:
             wait=True,
         )
         self._record_offset(offset_ref)
-        return 1  # qdrant delete 不返回条数
+        return -1  # qdrant delete 不返回条数(-1 = 后端不提供,调用方据此显示)
 
     def close(self) -> None:
         self.client.close()
