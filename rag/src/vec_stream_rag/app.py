@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
 from .index_metadata import check_index_metadata
-from .llm import active_provider, api_key_env, generate_answer, llm_available
+from .llm import active_provider, api_key_env, generate_answer, llm_available, llm_egress_allowed
 from .logging_setup import setup_logging
 from .rerank import Reranker
 from .tracing import get_tracer, instrument_app, setup_tracing
@@ -367,6 +367,11 @@ def search(req: SearchRequest, tenant_id: str = Depends(require_tenant)):
 @app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest, tenant_id: str = Depends(require_tenant)):
     if not llm_available():
+        if not llm_egress_allowed():
+            raise HTTPException(
+                503,
+                "LLM_EGRESS_ALLOWED=true 未配置,/ask 不可用(/search 不受影响)",
+            )
         raise HTTPException(
             503,
             f"{api_key_env()} 未配置({active_provider()}),/ask 不可用(/search 不受影响)",

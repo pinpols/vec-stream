@@ -47,12 +47,19 @@ def api_key_env() -> str:
     return "OPENAI_API_KEY"
 
 
+def llm_egress_allowed() -> bool:
+    """显式允许把召回资料发给 OpenAI-compatible 端点后,/ask 才可用。"""
+    return os.getenv("LLM_EGRESS_ALLOWED", "false").lower() == "true"
+
+
 def llm_available() -> bool:
-    return bool(os.getenv(api_key_env()))
+    return llm_egress_allowed() and bool(os.getenv(api_key_env()))
 
 
 def generate_answer(question: str, sources: list[dict]) -> dict:
     """走 OpenAI 兼容 API 生成。返回 {answer, model, usage}。"""
+    if not llm_egress_allowed():
+        raise PermissionError("LLM_EGRESS_ALLOWED=true 未配置,拒绝向 LLM 端点发送召回资料")
     from openai import OpenAI
 
     client = OpenAI(base_url=OPENAI_BASE_URL)  # api_key 从 OPENAI_API_KEY 读

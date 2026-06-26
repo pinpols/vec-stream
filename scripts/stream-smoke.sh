@@ -15,7 +15,7 @@ SMOKE_PK=""
 cleanup() { [ -n "${SMOKE_PK:-}" ] && docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAqc "DELETE FROM article WHERE id=$SMOKE_PK;" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-status() { "${COMPOSE[@]}" run --rm spark-lake "query-$1" article "$2" 2>/dev/null | grep -oE 'RESULT=[^[:space:]]+' | tail -1 | cut -d= -f2; }
+status() { "${COMPOSE[@]}" run --rm spark-lake "query-$1" article default "$2" 2>/dev/null | grep -oE 'RESULT=[^[:space:]]+' | tail -1 | cut -d= -f2; }
 assert() { # assert <engine> <id> <want>:轮询到 want 或超时 fail
   local engine="$1" id="$2" want="$3" deadline=$(( $(date +%s) + TIMEOUT )) got=""
   while [ "$(date +%s)" -lt "$deadline" ]; do

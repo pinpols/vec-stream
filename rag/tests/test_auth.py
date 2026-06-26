@@ -107,10 +107,19 @@ def test_ask_missing_key_401(client):
 
 def test_ask_valid_key_no_hits_uses_token_tenant(client, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_EGRESS_ALLOWED", "true")
     r = client.post("/ask", json={"query": "hello"}, headers={"X-API-Key": "key-acme"})
     assert r.status_code == 200
     assert r.json()["answer"] == "知识库中没有相关信息。"
     assert client.captured["tenant_id"] == "acme"
+
+
+def test_ask_requires_explicit_llm_egress_allowance(client, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("LLM_EGRESS_ALLOWED", raising=False)
+    r = client.post("/ask", json={"query": "hello"}, headers={"X-API-Key": "key-acme"})
+    assert r.status_code == 503
+    assert "LLM_EGRESS_ALLOWED=true" in r.json()["detail"]
 
 
 def test_require_tenant_unit_invalid_json(monkeypatch):

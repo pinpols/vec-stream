@@ -8,44 +8,95 @@ import os
 import sys
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, row_number, when
+from pyspark.sql.functions import coalesce, col, countDistinct, from_json, lit, row_number, when
 from pyspark.sql.types import LongType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
 TABLES = {
-    "article": [("id", "bigint"), ("tenant_id", "string"), ("title", "string"),
-                ("body", "string"), ("status", "string"), ("updated_at", "string")],
-    "product": [("id", "bigint"), ("tenant_id", "string"), ("name", "string"),
-                ("description", "string"), ("status", "string"), ("updated_at", "string")],
-    "comment": [("id", "bigint"), ("tenant_id", "string"), ("article_id", "bigint"),
-                ("body", "string"), ("updated_at", "string")],
+    "article": [
+        ("id", "bigint"),
+        ("tenant_id", "string"),
+        ("title", "string"),
+        ("body", "string"),
+        ("status", "string"),
+        ("updated_at", "string"),
+    ],
+    "product": [
+        ("id", "bigint"),
+        ("tenant_id", "string"),
+        ("name", "string"),
+        ("description", "string"),
+        ("status", "string"),
+        ("updated_at", "string"),
+    ],
+    "comment": [
+        ("id", "bigint"),
+        ("tenant_id", "string"),
+        ("article_id", "bigint"),
+        ("body", "string"),
+        ("updated_at", "string"),
+    ],
 }
 _SPARK = {"bigint": LongType(), "string": StringType()}
 
 
 def _envelope(cols):
     row = StructType([StructField(c, _SPARK[t], True) for c, t in cols])
-    return StructType([
-        StructField("before", row, True), StructField("after", row, True),
-        StructField("op", StringType(), True), StructField("ts_ms", LongType(), True),
-    ])
+    source = StructType([StructField("lsn", LongType(), True)])
+    return StructType(
+        [
+            StructField("before", row, True),
+            StructField("after", row, True),
+            StructField("op", StringType(), True),
+            StructField("ts_ms", LongType(), True),
+            StructField("source", source, True),
+        ]
+    )
+
+
+def _assert_single_partition_per_record(flat):
+    """同一业务记录跨 Kafka partition 会让 offset 排序失效,必须响亮失败。"""
+    offenders = (
+        flat.groupBy("tenant_id", "id")
+        .agg(countDistinct("_partition").alias("_partitions"))
+        .where(col("_partitions") > 1)
+        .limit(1)
+        .collect()
+    )
+    if offenders:
+        row = offenders[0]
+        raise RuntimeError(
+            "CDC ordering requires each tenant_id/id to stay in one Kafka partition; "
+            f"found tenant_id={row['tenant_id']!r}, id={row['id']!r} in "
+            f"{row['_partitions']} partitions. Verify Debezium Kafka key=PK and topic partition history."
+        )
 
 
 def _latest(df_kafka, names, envelope):
-    parsed = (df_kafka.selectExpr("CAST(value AS STRING) AS json", "offset")
-              .where(col("json").isNotNull())
-              .select(from_json(col("json"), envelope).alias("e"), col("offset"))
-              .where(col("e").isNotNull() & col("e.op").isNotNull()))
+    parsed = (
+        df_kafka.selectExpr("CAST(value AS STRING) AS json", "partition", "offset")
+        .where(col("json").isNotNull())
+        .select(from_json(col("json"), envelope).alias("e"), col("partition"), col("offset"))
+        .where(col("e").isNotNull() & col("e.op").isNotNull())
+    )
     is_del = col("e.op") == "d"
     src = when(is_del, col("e.before")).otherwise(col("e.after"))
     flat = parsed.select(
         *[src.getField(c).alias(c) for c in names],
-        col("e.op").alias("_op"), col("e.ts_ms").alias("_ts"), col("offset").alias("_off"),
-    ).where(col("id").isNotNull())
-    # 同一 id 的所有事件在同一 Kafka 分区,offset 严格单调=事件真实顺序;以 offset 为主键
-    # 比 ts_ms 更稳(ts_ms 同事务内会并列、个别版本可能为 null,desc_nulls_last 会误选旧事件)。
-    w = Window.partitionBy("id").orderBy(col("_off").desc())
-    return flat.withColumn("_rn", row_number().over(w)).where(col("_rn") == 1).drop("_rn", "_ts", "_off")
+        col("e.op").alias("_op"),
+        col("partition").alias("_partition"),
+        col("offset").alias("_off"),
+        # Postgres Debezium 优先用 source.lsn 做数据库事件顺序;老消息/非 PG 回退 ts_ms。
+        # 不合成 lsn*1e6+offset,避免长期运行时 long overflow。
+        coalesce(col("e.source.lsn"), col("e.ts_ms"), lit(0)).alias("_lsn_or_ts"),
+    ).where(col("tenant_id").isNotNull() & col("id").isNotNull())
+    _assert_single_partition_per_record(flat)
+    w = Window.partitionBy("tenant_id", "id").orderBy(col("_lsn_or_ts").desc(), col("_off").desc())
+    return (
+        flat.withColumn("_rn", row_number().over(w))
+        .where(col("_rn") == 1)
+        .drop("_rn", "_partition", "_off", "_lsn_or_ts")
+    )
 
 
 def _handler(spark, table):
@@ -53,9 +104,11 @@ def _handler(spark, table):
     cols = TABLES[table]
     names = [c for c, _ in cols]
     ident = f"ice.lake.{table}"
-    spark.sql(f"CREATE TABLE IF NOT EXISTS {ident} ({', '.join(f'{c} {t}' for c, t in cols)}) USING iceberg")
+    spark.sql(
+        f"CREATE TABLE IF NOT EXISTS {ident} ({', '.join(f'{c} {t}' for c, t in cols)}) USING iceberg"
+    )
     envelope = _envelope(cols)
-    set_clause = ", ".join(f"t.{c}=s.{c}" for c in names if c != "id")
+    set_clause = ", ".join(f"t.{c}=s.{c}" for c in names if c not in {"tenant_id", "id"})
     ins_cols, ins_vals = ", ".join(names), ", ".join(f"s.{c}" for c in names)
 
     def apply(sub_kafka):
@@ -64,11 +117,12 @@ def _handler(spark, table):
             return
         latest.createOrReplaceTempView("changes")
         latest.sparkSession.sql(f"""
-            MERGE INTO {ident} t USING changes s ON t.id = s.id
+            MERGE INTO {ident} t USING changes s ON t.tenant_id = s.tenant_id AND t.id = s.id
             WHEN MATCHED AND s._op = 'd' THEN DELETE
             WHEN MATCHED THEN UPDATE SET {set_clause}
             WHEN NOT MATCHED AND s._op <> 'd' THEN INSERT ({ins_cols}) VALUES ({ins_vals})
         """)
+
     return apply
 
 
@@ -101,21 +155,36 @@ def main() -> None:
         for t, apply in handlers.items():
             apply(batch_kafka.where(col("topic") == f"cdc.public.{t}"))
 
-    reader = (lambda fmt: getattr(spark, fmt).format("kafka")
-              .option("kafka.bootstrap.servers", bootstrap)
-              .option("subscribePattern", pattern))
+    def reader(fmt):
+        return (
+            getattr(spark, fmt)
+            .format("kafka")
+            .option("kafka.bootstrap.servers", bootstrap)
+            .option("subscribePattern", pattern)
+        )
+
     if stream:
         chk = f"s3a://{bucket}/_chk/iceberg-{arg}"
         interval = os.getenv("TRIGGER_SECONDS", "10")
         raw = _reliable(reader("readStream").option("startingOffsets", "earliest")).load()
         # queryName 固定:让 streaming 指标名稳定为 spark_lake.driver.iceberg-<arg>.*,
         # 否则默认用每次重启都变的 query runId(UUID),Grafana 面板会断、死时序堆积。
-        q = (raw.writeStream.queryName(f"iceberg-{arg}").foreachBatch(lambda bdf, _e: process(bdf))
-             .option("checkpointLocation", chk).trigger(processingTime=f"{interval} seconds").start())
+        q = (
+            raw.writeStream.queryName(f"iceberg-{arg}")
+            .foreachBatch(lambda bdf, _e: process(bdf))
+            .option("checkpointLocation", chk)
+            .trigger(processingTime=f"{interval} seconds")
+            .start()
+        )
         print(f"[cdc_to_iceberg] STREAM {pattern} -> ice.lake.* (chk={chk}, trigger={interval}s)")
         q.awaitTermination()
     else:
-        raw = reader("read").option("startingOffsets", "earliest").option("endingOffsets", "latest").load()
+        raw = (
+            reader("read")
+            .option("startingOffsets", "earliest")
+            .option("endingOffsets", "latest")
+            .load()
+        )
         process(raw)
         print(f"[cdc_to_iceberg] BATCH {pattern} -> ice.lake.* 完成 (tables={tables})")
         spark.stop()

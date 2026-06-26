@@ -63,7 +63,8 @@ def setup_tracing(service_name: str = _SERVICE_NAME_DEFAULT) -> None:
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", _DEFAULT_OTLP_ENDPOINT)
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+    if endpoint.lower() not in {"none", "disabled"}:
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
     trace.set_tracer_provider(provider)
 
     # httpx:出站调用自动埋点 + 注入 traceparent(跨服务 context 传播的关键)。

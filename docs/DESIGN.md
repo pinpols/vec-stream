@@ -206,7 +206,7 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 接口:
 
 - `POST /search` — 纯语义搜索:query → embed → 向量召回(带 tenant 过滤)→ (可选)rerank → 返回 chunk 列表。
-- `POST /ask` — RAG 问答:上面召回结果作为上下文 → OpenAI 兼容 API 生成答案,带引用来源。
+- `POST /ask` — RAG 问答:上面召回结果作为上下文 → OpenAI 兼容 API 生成答案,带引用来源。该接口涉及把租户召回内容发给 LLM 端点,需显式设置 `LLM_EGRESS_ALLOWED=true`;未允许时 `/search` 仍可用。
 
 链路:`query embedding → 向量召回 topK → rerank 重排 topN → 拼 prompt → OpenAI 兼容 API 生成 → 附 source`。
 
@@ -258,7 +258,7 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 | 向量库 | pgvector + RLS,Qdrant 可切 | Qdrant collection 蓝绿 / 托管向量库 |
 | RAG 服务 | Python(FastAPI),/search + /ask + rerank | API gateway、限流、审计日志 |
 | Lakehouse | Spark local runner 写 Hudi + Iceberg | Spark on Kubernetes/YARN/托管 Spark |
-| 生成模型 | OpenAI 兼容 API(`OPENAI_BASE_URL` 可指 agent-ctl 网关 / OpenAI / DeepSeek / 通义 / Ollama / vLLM) | 网关路由、降级、成本治理 |
+| 生成模型 | OpenAI 兼容 API(`LLM_EGRESS_ALLOWED=true` 后启用;`OPENAI_BASE_URL` 可指 agent-ctl 网关 / OpenAI / DeepSeek / 通义 / Ollama / vLLM) | 网关路由、降级、成本治理 |
 | 质量评估 | `eval/` retrieval/generation/reconcile | 发布前强制质量门禁 |
 
 ---

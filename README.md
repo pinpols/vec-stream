@@ -145,7 +145,7 @@ curl -s -X POST http://localhost:8000/search \
 
 - ~~**阶段 0**:Debezium 监听一张表 → Kafka → Worker 处理 INSERT → 写 pgvector → `/search` 能搜到~~ ✅ 2026-06-10
 - ~~**阶段 1**:UPDATE / DELETE、确定性 ID、hash 去重、DLQ~~ ✅ 2026-06-10(DLQ topic:`cdc.dlq`,失败消息带 error/source_offset header)
-- ~~**阶段 2**:`/ask` 生成 + rerank + 多租过滤~~ ✅ 2026-06-10(rerank 用 bge-reranker-base,`RERANK_ENABLED=false` 可关)。**生成层统一走 OpenAI 兼容协议**:`OPENAI_BASE_URL` 指 agent-ctl 网关或任意兼容服务(OpenAI/DeepSeek/通义/Ollama/vLLM;网关侧再处理 Claude/路由/回退),见 `.env.example`
+- ~~**阶段 2**:`/ask` 生成 + rerank + 多租过滤~~ ✅ 2026-06-10(rerank 用 bge-reranker-base,`RERANK_ENABLED=false` 可关)。**生成层统一走 OpenAI 兼容协议**:`OPENAI_BASE_URL` 指 agent-ctl 网关或任意兼容服务(OpenAI/DeepSeek/通义/Ollama/vLLM;网关侧再处理 Claude/路由/回退)。`/ask` 会把召回内容发给 LLM 端点,需显式设置 `LLM_EGRESS_ALLOWED=true`;见 `.env.example`
 - ~~**阶段 3**:切 Qdrant、跨表文档、监控指标~~ ✅ 2026-06-10(全部阶段完成)
 
 详见 [`docs/DESIGN.md`](docs/DESIGN.md) §7。
@@ -180,7 +180,8 @@ uvx ruff@0.8.6 format --check --config ruff.toml worker rag eval embed-service  
 ### test(pytest,在各模块目录内)
 
 ```bash
-cd worker && uv run pytest -q   # rag / eval / embed-service 同理
+cd worker && uv sync --group dev && uv run --group dev python -m pytest -q
+# rag / eval / embed-service 同理
 ```
 
 > worker / rag / embed-service 跑测试需各自依赖;"加载真模型"的用例已 mock,

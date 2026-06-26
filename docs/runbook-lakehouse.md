@@ -45,15 +45,23 @@ $COMPOSE run --rm spark-lake hudi all
 $COMPOSE run --rm spark-lake iceberg all
 # 查询(单表 + 可选 id)
 $COMPOSE run --rm spark-lake query-hudi product          # COUNT=
-$COMPOSE run --rm spark-lake query-iceberg article 1     # RESULT=<status|ABSENT>
+$COMPOSE run --rm spark-lake query-iceberg article default 1  # RESULT=<status|ABSENT>
 ```
 
 ## 关键设计
 
-- **Hudi**(`cdc_to_hudi.py`):扁平→`df.write.format("hudi")` upsert;删除用 `_hoodie_is_deleted`;MOR + GLOBAL_SIMPLE 索引;recordkey=id、precombine=ts_ms、partition=tenant_id。**删除依赖 `REPLICA IDENTITY FULL`**(before 完整;smoke 自动设)。
-- **Iceberg**(`cdc_to_iceberg.py`):每 id 取最新变更→`MERGE INTO`(`op=d` DELETE / 其余 UPSERT);Spark Iceberg v2,REST catalog + S3FileIO。
+- **Hudi**(`cdc_to_hudi.py`):扁平→`df.write.format("hudi")` upsert;删除用 `_hoodie_is_deleted`;MOR + GLOBAL_SIMPLE 索引;recordkey=`tenant_id,id`、precombine 用零填充 `(source.lsn 或 ts_ms, offset)` 字符串、partition=`tenant_id`。**删除依赖 `REPLICA IDENTITY FULL`**(before 完整;smoke 自动设)。
+- **Iceberg**(`cdc_to_iceberg.py`):每 `tenant_id,id` 取最新变更→`MERGE INTO`(`op=d` DELETE / 其余 UPSERT);Spark Iceberg v2,REST catalog + S3FileIO。
+- **CDC 顺序边界**:优先使用 Debezium Postgres `source.lsn` 排序,offset 只作同位点 tie-breaker;微批内校验同一 `tenant_id,id` 不能跨 Kafka partition,否则作业响亮失败。生产仍必须保持 Debezium Kafka key=PK 且 topic 扩分区历史稳定。
 - **批量 / 流共用逻辑**:`STREAM_MODE=true` 走 `readStream`+`foreachBatch`(checkpoint 在 `s3a://warehouse/_chk/<engine>-<table>`),否则批量读全 topic;每微批走同一段解析+写入。
 - **幂等**:都按主键合并、重放结果一致。
+
+### Hudi record key 升级边界
+
+旧版本如果已经写出 `recordkey=id` 的 Hudi 表,不能直接用当前 `recordkey=tenant_id,id` 配置续写同一路径。作业会读取 `.hoodie/hoodie.properties` 并拒绝旧 key 表。迁移方式二选一:
+
+- 本地/可重放环境:停止 Hudi 流,删除 `s3a://warehouse/hudi/<table>` 和对应 `s3a://warehouse/_chk/hudi-*` checkpoint,从 Kafka earliest 重建。
+- 生产环境:写入新 base path / 新表名,全量重放校验后切换读侧,再下线旧表。
 
 ## 表维护(后台 table service · 生产必备)
 

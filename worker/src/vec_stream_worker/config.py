@@ -30,52 +30,78 @@ def _tables_from_env() -> dict:
 
 @dataclass(frozen=True)
 class Config:
-    kafka_bootstrap: str = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
+    kafka_bootstrap: str = field(
+        default_factory=lambda: os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
+    )
     # 正则订阅:新表只要进了 Debezium 的 table.include.list 并配好 tables,无需改订阅
-    kafka_topic_pattern: str = os.getenv("KAFKA_TOPIC_PATTERN", r"^cdc\.public\..*")
-    kafka_group_id: str = os.getenv("KAFKA_GROUP_ID", "vec-stream-worker")
+    kafka_topic_pattern: str = field(
+        default_factory=lambda: os.getenv("KAFKA_TOPIC_PATTERN", r"^cdc\.public\..*")
+    )
+    kafka_group_id: str = field(
+        default_factory=lambda: os.getenv("KAFKA_GROUP_ID", "vec-stream-worker")
+    )
     # worker 用最小权限角色 vs_worker(doc_vectors/processed_offsets DML),
     # 不再默认超级账号:优先 WORKER_PG_DSN,回退共享 PG_DSN,再回退本地 vs_worker 默认
-    pg_dsn: str = (
-        os.getenv("WORKER_PG_DSN")
+    pg_dsn: str = field(
+        default_factory=lambda: os.getenv("WORKER_PG_DSN")
         or os.getenv("PG_DSN")
         or "postgresql://vs_worker:vs_worker@localhost:5433/vec_stream"
     )
-    embed_model: str = os.getenv("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
-    embed_dim: int = int(os.getenv("EMBED_DIM", "512"))
+    embed_model: str = field(
+        default_factory=lambda: os.getenv("EMBED_MODEL", "BAAI/bge-small-zh-v1.5")
+    )
+    embed_dim: int = field(default_factory=lambda: int(os.getenv("EMBED_DIM", "512")))
     # M2:embedding 拆服务。非空则 worker 走 HTTP 调 embed-service,否则进程内加载模型
-    embed_service_url: str = os.getenv("EMBED_SERVICE_URL", "")
-    embed_service_timeout_s: float = float(os.getenv("EMBED_SERVICE_TIMEOUT_S", "30"))
-    embed_service_max_batch: int = int(os.getenv("EMBED_SERVICE_MAX_BATCH", "64"))
+    embed_service_url: str = field(default_factory=lambda: os.getenv("EMBED_SERVICE_URL", ""))
+    embed_service_timeout_s: float = field(
+        default_factory=lambda: float(os.getenv("EMBED_SERVICE_TIMEOUT_S", "30"))
+    )
+    embed_service_max_batch: int = field(
+        default_factory=lambda: int(os.getenv("EMBED_SERVICE_MAX_BATCH", "64"))
+    )
     # embedding 后端可插拔:local(进程内 SentenceTransformer)| openai(OpenAI 兼容 embeddings)
     # ⚠️ 换 provider/模型常意味着换维度,必须与 doc_vectors.embedding 维度一致(换维走蓝绿重建)
-    embed_provider: str = os.getenv("EMBED_PROVIDER", "local")
-    embed_openai_base_url: str = os.getenv("EMBED_OPENAI_BASE_URL", "")
+    embed_provider: str = field(default_factory=lambda: os.getenv("EMBED_PROVIDER", "local"))
+    embed_openai_base_url: str = field(
+        default_factory=lambda: os.getenv("EMBED_OPENAI_BASE_URL", "")
+    )
     # M2:启动时校验配置字段确实存在于源表(改列/删列快速失败,不静默用错数据)
-    schema_check: bool = os.getenv("SCHEMA_CHECK", "true").lower() == "true"
+    schema_check: bool = field(
+        default_factory=lambda: os.getenv("SCHEMA_CHECK", "true").lower() == "true"
+    )
     # M2:记录当前索引配置,供 rag 启动时校验 worker/rag embedding 与 chunk 参数一致
-    index_metadata_enabled: bool = os.getenv("INDEX_METADATA_ENABLED", "true").lower() == "true"
-    chunk_size: int = int(os.getenv("CHUNK_SIZE", "400"))
-    chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "50"))
+    index_metadata_enabled: bool = field(
+        default_factory=lambda: os.getenv("INDEX_METADATA_ENABLED", "true").lower() == "true"
+    )
+    chunk_size: int = field(default_factory=lambda: int(os.getenv("CHUNK_SIZE", "400")))
+    chunk_overlap: int = field(default_factory=lambda: int(os.getenv("CHUNK_OVERLAP", "50")))
     # 单文档字符上限(防超大文本拖垮单条处理)
-    max_doc_chars: int = int(os.getenv("MAX_DOC_CHARS", "200000"))
+    max_doc_chars: int = field(default_factory=lambda: int(os.getenv("MAX_DOC_CHARS", "200000")))
     tables: dict = field(default_factory=_tables_from_env)
     # 失败重试 + DLQ
-    dlq_topic: str = os.getenv("DLQ_TOPIC", "cdc.dlq")
-    max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
-    retry_backoff_s: float = float(os.getenv("RETRY_BACKOFF_S", "1.0"))
+    dlq_topic: str = field(default_factory=lambda: os.getenv("DLQ_TOPIC", "cdc.dlq"))
+    max_retries: int = field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
+    retry_backoff_s: float = field(
+        default_factory=lambda: float(os.getenv("RETRY_BACKOFF_S", "1.0"))
+    )
     # M2 DLQ 工具链:重投次数上限,超限归档到 dead_letter_archive(PG)而非无限重投
-    dlq_max_replays: int = int(os.getenv("DLQ_MAX_REPLAYS", "5"))
+    dlq_max_replays: int = field(default_factory=lambda: int(os.getenv("DLQ_MAX_REPLAYS", "5")))
     # 向量库后端:pgvector(默认)| qdrant
-    vector_backend: str = os.getenv("VECTOR_BACKEND", "pgvector")
-    qdrant_url: str = os.getenv("QDRANT_URL", "http://localhost:6333")
-    qdrant_api_key: str = os.getenv("QDRANT_API_KEY", "")
-    qdrant_collection: str = os.getenv("QDRANT_COLLECTION", "doc_vectors")
+    vector_backend: str = field(default_factory=lambda: os.getenv("VECTOR_BACKEND", "pgvector"))
+    qdrant_url: str = field(
+        default_factory=lambda: os.getenv("QDRANT_URL", "http://localhost:6333")
+    )
+    qdrant_api_key: str = field(default_factory=lambda: os.getenv("QDRANT_API_KEY", ""))
+    qdrant_collection: str = field(
+        default_factory=lambda: os.getenv("QDRANT_COLLECTION", "doc_vectors")
+    )
     # replication slot lag 监控(slot 不消费会撑爆 PG 磁盘,DESIGN.md §5)
-    metrics_port: int = int(os.getenv("METRICS_PORT", "9100"))
-    slot_name: str = os.getenv("SLOT_NAME", "vec_stream_slot")
-    slot_check_interval_s: int = int(os.getenv("SLOT_CHECK_INTERVAL_S", "60"))
-    slot_lag_warn_mb: int = int(os.getenv("SLOT_LAG_WARN_MB", "256"))
+    metrics_port: int = field(default_factory=lambda: int(os.getenv("METRICS_PORT", "9100")))
+    slot_name: str = field(default_factory=lambda: os.getenv("SLOT_NAME", "vec_stream_slot"))
+    slot_check_interval_s: int = field(
+        default_factory=lambda: int(os.getenv("SLOT_CHECK_INTERVAL_S", "60"))
+    )
+    slot_lag_warn_mb: int = field(default_factory=lambda: int(os.getenv("SLOT_LAG_WARN_MB", "256")))
 
     def __post_init__(self):
         if self.chunk_overlap >= self.chunk_size:

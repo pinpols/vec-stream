@@ -3,6 +3,8 @@
 import sys
 import types
 
+import pytest
+
 from vec_stream_rag import llm
 
 SOURCES = [{"n": 1, "title": "T", "content": "C"}]
@@ -43,6 +45,7 @@ def _install_fake_openai(monkeypatch, captured):
 
 def test_generate_answer_openai_compatible(monkeypatch):
     captured = {}
+    monkeypatch.setenv("LLM_EGRESS_ALLOWED", "true")
     monkeypatch.setattr(llm, "LLM_MODEL", "deepseek-chat")
     monkeypatch.setattr(llm, "OPENAI_BASE_URL", "http://localhost:8400/v1")
     _install_fake_openai(monkeypatch, captured)
@@ -58,9 +61,24 @@ def test_generate_answer_openai_compatible(monkeypatch):
     assert "Q" in msgs[1]["content"] and "[1]" in msgs[1]["content"]
 
 
+def test_generate_answer_refuses_without_egress_allowance(monkeypatch):
+    monkeypatch.delenv("LLM_EGRESS_ALLOWED", raising=False)
+    with pytest.raises(PermissionError, match="LLM_EGRESS_ALLOWED=true"):
+        llm.generate_answer("Q", SOURCES)
+
+
 def test_api_key_env_is_openai():
     # 统一 OpenAI 兼容 → 始终查 OPENAI_API_KEY(指向网关时为占位)
     assert llm.api_key_env() == "OPENAI_API_KEY"
+
+
+def test_llm_available_requires_explicit_egress_allowance(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("LLM_EGRESS_ALLOWED", raising=False)
+    assert llm.llm_available() is False
+
+    monkeypatch.setenv("LLM_EGRESS_ALLOWED", "true")
+    assert llm.llm_available() is True
 
 
 def test_active_provider_reflects_base_url(monkeypatch):

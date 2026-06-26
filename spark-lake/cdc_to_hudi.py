@@ -8,25 +8,48 @@ import os
 import sys
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import coalesce, col, from_json, lit, when
+from pyspark.sql.functions import coalesce, col, countDistinct, format_string, from_json, lit, when
 from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 TABLES = {
-    "article": [("id", LongType()), ("tenant_id", StringType()), ("title", StringType()),
-                ("body", StringType()), ("status", StringType()), ("updated_at", StringType())],
-    "product": [("id", LongType()), ("tenant_id", StringType()), ("name", StringType()),
-                ("description", StringType()), ("status", StringType()), ("updated_at", StringType())],
-    "comment": [("id", LongType()), ("tenant_id", StringType()), ("article_id", LongType()),
-                ("body", StringType()), ("updated_at", StringType())],
+    "article": [
+        ("id", LongType()),
+        ("tenant_id", StringType()),
+        ("title", StringType()),
+        ("body", StringType()),
+        ("status", StringType()),
+        ("updated_at", StringType()),
+    ],
+    "product": [
+        ("id", LongType()),
+        ("tenant_id", StringType()),
+        ("name", StringType()),
+        ("description", StringType()),
+        ("status", StringType()),
+        ("updated_at", StringType()),
+    ],
+    "comment": [
+        ("id", LongType()),
+        ("tenant_id", StringType()),
+        ("article_id", LongType()),
+        ("body", StringType()),
+        ("updated_at", StringType()),
+    ],
 }
 
 
 def _envelope(cols):
     row = StructType([StructField(n, t, True) for n, t in cols])
-    return StructType([
-        StructField("before", row, True), StructField("after", row, True),
-        StructField("op", StringType(), True), StructField("ts_ms", LongType(), True),
-    ])
+    source = StructType([StructField("lsn", LongType(), True)])
+    return StructType(
+        [
+            StructField("before", row, True),
+            StructField("after", row, True),
+            StructField("op", StringType(), True),
+            StructField("ts_ms", LongType(), True),
+            StructField("source", source, True),
+        ]
+    )
 
 
 def _value(src, name):
@@ -38,27 +61,52 @@ def _value(src, name):
 
 
 def _flatten(df_kafka, cols, envelope):
-    parsed = (df_kafka.selectExpr("CAST(value AS STRING) AS json", "offset AS _off")
-              .where(col("json").isNotNull())
-              .select(from_json(col("json"), envelope).alias("e"), col("_off"))
-              .where(col("e").isNotNull() & col("e.op").isNotNull()))
+    parsed = (
+        df_kafka.selectExpr(
+            "CAST(value AS STRING) AS json", "partition AS _partition", "offset AS _off"
+        )
+        .where(col("json").isNotNull())
+        .select(from_json(col("json"), envelope).alias("e"), col("_partition"), col("_off"))
+        .where(col("e").isNotNull() & col("e.op").isNotNull())
+    )
     is_del = col("e.op") == "d"
     src = when(is_del, col("e.before")).otherwise(col("e.after"))
-    return parsed.select(
+    flat = parsed.select(
         *[_value(src, n) for n, _ in cols],
-        # precombine 用 ts_ms*1e6+offset 合成单调序:ts_ms 同毫秒/为 null 时仍按 offset
-        #(同 id 同分区 offset 严格单调=真实顺序)定胜者,避免旧事件覆盖新事件(与 Iceberg 侧一致)。
-        (coalesce(col("e.ts_ms"), lit(0)) * lit(1000000) + col("_off")).alias("_ts"),
+        col("_partition"),
+        col("_off"),
+        # precombine 优先用 Postgres Debezium source.lsn;老消息/非 PG 回退 ts_ms。
+        # Hudi 只能配置单字段 precombine,用零填充字符串拼 (lsn_or_ts,offset),
+        # 保留 tie-breaker 且避免 lsn*1e6+offset 产生 long overflow。
+        format_string(
+            "%020d:%020d", coalesce(col("e.source.lsn"), col("e.ts_ms"), lit(0)), col("_off")
+        ).alias("_event_pos"),
         is_del.alias("_hoodie_is_deleted"),
     ).where(col("id").isNotNull())
+    offenders = (
+        flat.groupBy("tenant_id", "id")
+        .agg(countDistinct("_partition").alias("_partitions"))
+        .where(col("_partitions") > 1)
+        .limit(1)
+        .collect()
+    )
+    if offenders:
+        row = offenders[0]
+        raise RuntimeError(
+            "CDC ordering requires each tenant_id/id to stay in one Kafka partition; "
+            f"found tenant_id={row['tenant_id']!r}, id={row['id']!r} in "
+            f"{row['_partitions']} partitions. Verify Debezium Kafka key=PK and topic partition history."
+        )
+    return flat.drop("_partition", "_off")
 
 
 def _opts(target_table):
     opts = {
         "hoodie.table.name": target_table,
         "hoodie.datasource.write.table.name": target_table,
-        "hoodie.datasource.write.recordkey.field": "id",
-        "hoodie.datasource.write.precombine.field": "_ts",
+        "hoodie.datasource.write.recordkey.field": "tenant_id,id",
+        "hoodie.datasource.write.keygenerator.class": "org.apache.hudi.keygen.ComplexKeyGenerator",
+        "hoodie.datasource.write.precombine.field": "_event_pos",
         "hoodie.datasource.write.partitionpath.field": "tenant_id",
         "hoodie.datasource.write.hive_style_partitioning": "true",
         "hoodie.datasource.write.operation": "upsert",
@@ -83,17 +131,62 @@ def _opts(target_table):
     zk = os.getenv("HUDI_LOCK_ZK_URL")
     if zk:
         host, _, port = zk.partition(":")
-        opts.update({
-            "hoodie.write.concurrency.mode": "optimistic_concurrency_control",
-            "hoodie.write.lock.provider":
-                "org.apache.hudi.client.transaction.lock.ZookeeperBasedLockProvider",
-            "hoodie.write.lock.zookeeper.url": host,
-            "hoodie.write.lock.zookeeper.port": port or "2181",
-            "hoodie.write.lock.zookeeper.lock_key": target_table,
-            "hoodie.write.lock.zookeeper.base_path": "/hudi/locks",
-            "hoodie.cleaner.policy.failed.writes": "LAZY",
-        })
+        opts.update(
+            {
+                "hoodie.write.concurrency.mode": "optimistic_concurrency_control",
+                "hoodie.write.lock.provider": "org.apache.hudi.client.transaction.lock.ZookeeperBasedLockProvider",
+                "hoodie.write.lock.zookeeper.url": host,
+                "hoodie.write.lock.zookeeper.port": port or "2181",
+                "hoodie.write.lock.zookeeper.lock_key": target_table,
+                "hoodie.write.lock.zookeeper.base_path": "/hudi/locks",
+                "hoodie.cleaner.policy.failed.writes": "LAZY",
+            }
+        )
     return opts
+
+
+def _hudi_table_props(spark, base_path):
+    """读取已有 Hudi table config;路径不存在则视为新表。"""
+    jvm = spark.sparkContext._jvm
+    conf = spark.sparkContext._jsc.hadoopConfiguration()
+    path = jvm.org.apache.hadoop.fs.Path(f"{base_path}/.hoodie/hoodie.properties")
+    fs = path.getFileSystem(conf)
+    if not fs.exists(path):
+        return {}
+
+    stream = fs.open(path)
+    props = jvm.java.util.Properties()
+    try:
+        props.load(stream)
+    finally:
+        stream.close()
+    names = list(props.stringPropertyNames().toArray())
+    return {name: props.getProperty(name) for name in names}
+
+
+def _assert_hudi_table_compatible(spark, base_path, opts):
+    props = _hudi_table_props(spark, base_path)
+    if not props:
+        return
+    expected_key = opts["hoodie.datasource.write.recordkey.field"]
+    existing_key = (
+        props.get("hoodie.table.recordkey.fields")
+        or props.get("hoodie.datasource.write.recordkey.field")
+        or ""
+    )
+    normalized_key = existing_key.replace(" ", "").strip("[]")
+    if not normalized_key:
+        raise RuntimeError(
+            f"Existing Hudi table at {base_path} has no readable record key in "
+            ".hoodie/hoodie.properties. Refuse to write until the table layout is "
+            "confirmed or rebuilt/migrated."
+        )
+    if normalized_key != expected_key:
+        raise RuntimeError(
+            f"Existing Hudi table at {base_path} uses record key {existing_key!r}, "
+            f"but this job requires {expected_key!r}. Rebuild/migrate the table and checkpoint "
+            "instead of writing the new key layout into the old table."
+        )
 
 
 def _handler(table, bucket):
@@ -101,12 +194,18 @@ def _handler(table, bucket):
     envelope = _envelope(cols)
     base_path = f"s3a://{bucket}/hudi/{table}"
     opts = _opts(f"{table}_hudi")
+    compatible_checked = False
 
     def apply(sub_kafka):
+        nonlocal compatible_checked
         flat = _flatten(sub_kafka, cols, envelope)
         if flat.rdd.isEmpty():
             return
+        if not compatible_checked:
+            _assert_hudi_table_compatible(flat.sparkSession, base_path, opts)
+            compatible_checked = True
         flat.write.format("hudi").options(**opts).mode("append").save(base_path)
+
     return apply
 
 
@@ -138,21 +237,36 @@ def main() -> None:
         for t, apply in handlers.items():
             apply(batch_kafka.where(col("topic") == f"cdc.public.{t}"))
 
-    reader = (lambda fmt: getattr(spark, fmt).format("kafka")
-              .option("kafka.bootstrap.servers", bootstrap)
-              .option("subscribePattern", pattern))
+    def reader(fmt):
+        return (
+            getattr(spark, fmt)
+            .format("kafka")
+            .option("kafka.bootstrap.servers", bootstrap)
+            .option("subscribePattern", pattern)
+        )
+
     if stream:
         chk = f"s3a://{bucket}/_chk/hudi-{arg}"
         interval = os.getenv("TRIGGER_SECONDS", "10")
         raw = _reliable(reader("readStream").option("startingOffsets", "earliest")).load()
         # queryName 固定:让 streaming 指标名稳定为 spark_lake.driver.hudi-<arg>.*,
         # 否则默认用每次重启都变的 query runId(UUID),Grafana 面板会断、死时序堆积。
-        q = (raw.writeStream.queryName(f"hudi-{arg}").foreachBatch(lambda bdf, _e: process(bdf))
-             .option("checkpointLocation", chk).trigger(processingTime=f"{interval} seconds").start())
+        q = (
+            raw.writeStream.queryName(f"hudi-{arg}")
+            .foreachBatch(lambda bdf, _e: process(bdf))
+            .option("checkpointLocation", chk)
+            .trigger(processingTime=f"{interval} seconds")
+            .start()
+        )
         print(f"[cdc_to_hudi] STREAM {pattern} -> hudi/* (chk={chk}, trigger={interval}s)")
         q.awaitTermination()
     else:
-        raw = reader("read").option("startingOffsets", "earliest").option("endingOffsets", "latest").load()
+        raw = (
+            reader("read")
+            .option("startingOffsets", "earliest")
+            .option("endingOffsets", "latest")
+            .load()
+        )
         process(raw)
         print(f"[cdc_to_hudi] BATCH {pattern} -> hudi/* 完成 (tables={tables})")
         spark.stop()

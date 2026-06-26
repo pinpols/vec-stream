@@ -107,9 +107,10 @@ wait_indexed_pk() {
   local count
   for _ in $(seq 1 "$tries"); do
     count="$(
-      docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA <<SQL
+      docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        -v tenant="$tenant" -v pk="$pk" -tA <<'SQL'
 SELECT count(*) FROM doc_vectors
-WHERE tenant_id = '$tenant' AND source_table = 'article' AND source_pk = '$pk';
+WHERE tenant_id = :'tenant' AND source_table = 'article' AND source_pk = :'pk';
 SQL
     )"
     if [ "${count:-0}" -gt 0 ]; then
@@ -170,15 +171,17 @@ wait_indexed_pk "$OTHER_PK" "other-smoke"
 wait_for_pk "tenant isolation marker visible default tenant" "published" "$OTHER_PK" absent
 
 echo "== metadata update: status filter follows source row without re-embedding =="
-docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<SQL
-UPDATE article SET status = 'archived', updated_at = now() WHERE id = $SMOKE_PK;
+docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -v smoke_pk="$SMOKE_PK" <<'SQL'
+UPDATE article SET status = 'archived', updated_at = now() WHERE id = :smoke_pk;
 SQL
 wait_for_pk "smoke test marker realtime vector sync" "published" "$SMOKE_PK" absent
 wait_for_pk "smoke test marker realtime vector sync" "archived" "$SMOKE_PK" present
 
 echo "== delete removes vectors =="
-docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<SQL
-DELETE FROM article WHERE id IN ($SMOKE_PK, $OTHER_PK);
+docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -v smoke_pk="$SMOKE_PK" -v other_pk="$OTHER_PK" <<'SQL'
+DELETE FROM article WHERE id IN (:smoke_pk, :other_pk);
 SQL
 wait_for_pk "smoke test marker realtime vector sync" "archived" "$SMOKE_PK" absent
 

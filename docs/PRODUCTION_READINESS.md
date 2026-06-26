@@ -9,7 +9,7 @@
 |---|---:|---|
 | 架构边界 | A | 单 CDC 事实流 + 多 sink 扇出清晰;向量、Hudi、Iceberg 独立消费,互不阻塞 |
 | CDC 语义 | A- | Debezium JSON 统一复用;insert/update/delete/snapshot 均有落地路径;保留 schema governance 缺口 |
-| 向量/RAG | A | 确定性 ID、hash 去重、metadata 刷新、RLS、API key 租户绑定、rerank、/ask、评估模块已形成闭环 |
+| 向量/RAG | A | 确定性 ID、hash 去重、metadata 刷新、RLS、API key 租户绑定、rerank、/ask 出境门闸、评估模块已形成闭环 |
 | Lakehouse | B+ | Spark 统一写 Hudi/Iceberg,批量+连续流+checkpoint+维护脚本具备;仍是 local Spark runner,不是托管计算集群 |
 | 可靠性 | B+ | at-least-once + 幂等写、processed_offsets、DLQ 上限归档、slot lag 告警路径具备;生产 HA 依赖外部托管或独立部署 |
 | 可观测 | B+ | Prometheus/Grafana/alerts/OTel 可选链路已具备;生产还需 Alertmanager、日志采集和告警值校准 |
@@ -24,10 +24,10 @@
 ```bash
 bash scripts/validate.sh
 
-cd worker && uv sync && uv run pytest -q
-cd ../rag && uv sync && uv run pytest -q
-cd ../eval && uv sync && uv run pytest -q
-cd ../embed-service && uv sync && uv run pytest -q
+cd worker && uv sync --group dev && uv run --group dev python -m pytest -q
+cd ../rag && uv sync --group dev && uv run --group dev python -m pytest -q
+cd ../eval && uv sync --group dev && uv run --group dev python -m pytest -q
+cd ../embed-service && uv sync --group dev && uv run --group dev python -m pytest -q
 ```
 
 本地端到端发布前再跑:
@@ -50,7 +50,7 @@ CI 门禁:
 
 - 多 sink 架构:单 Debezium connector / 单复制槽 / `cdc.public.*` 统一 topic,向量与 lakehouse 各自独立消费。
 - 幂等与一致性:向量侧确定性 `vector_id`,处理账本与 PG 写入同事务;lakehouse 按 PK upsert/delete。
-- 安全隔离:源库最小权限账号,RAG key 推导 tenant,PG RLS 做强制隔离。
+- 安全隔离:源库最小权限账号,RAG key 推导 tenant,PG RLS 做强制隔离;`/ask` 需显式允许 LLM 数据出境。
 - 暴露面收敛:本地 compose 端口默认只绑定 `127.0.0.1`;CI 会拒绝新增未绑定 loopback 的端口映射。
 - 生产防呆:`APP_ENV=production` 会拒绝 dev key、弱 DSN、Qdrant 无 API key。
 - 成本控制:文本 hash 去重,metadata-only 更新不重新 embedding,embedding service 可独立扩展。

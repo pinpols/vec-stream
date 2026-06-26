@@ -90,7 +90,7 @@ def test_app_imports_without_otel(monkeypatch):
 def test_setup_tracing_enabled(monkeypatch):
     pytest.importorskip("opentelemetry")
     monkeypatch.setenv("OTEL_ENABLED", "true")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "none")
     import vec_stream_rag.tracing as t
 
     t._enabled = False
@@ -109,6 +109,7 @@ def test_instrument_app_enabled_does_not_break_app(monkeypatch):
     from fastapi.testclient import TestClient
 
     monkeypatch.setenv("OTEL_ENABLED", "true")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "none")
     import vec_stream_rag.tracing as t
 
     t._enabled = False

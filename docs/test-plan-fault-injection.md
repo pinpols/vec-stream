@@ -18,7 +18,7 @@
 
 - **崩溃恢复**:Structured Streaming checkpoint(`s3a://warehouse/_chk/hudi-all`)+ `restart:unless-stopped`
   让流容器被 kill 后从断点续跑,崩溃窗口内的 insert/update 都不丢(T1/T2)。
-- **有效 exactly-once**:Hudi 按 `recordkey=id` upsert,重放同一 offset 区间只是再次 upsert 同 id,
+- **有效 exactly-once**:Hudi 按 `recordkey=tenant_id,id` upsert,重放同一 offset 区间只是再次 upsert 同一业务记录,
   不产生重复行——经 3 次流重启后 **Hudi 行数与源库精确相等(13==13)**,既不重也不漏(T3)。
   > 注:T3 脚本里"期望==2"是测试预期写错了——T0 清了 checkpoint 会从 earliest 重放**整个 topic 历史**,
   > 故表里是所有历史 id 而非本轮 2 行;改用"Hudi==PG"才是正确的不重不漏判据。
