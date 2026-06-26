@@ -13,6 +13,10 @@
   - `change-me-*`
   - `vs_rag:vs_rag@...` / `vs_worker:vs_worker@...`
   - `VECTOR_BACKEND=qdrant` 但未设置 `QDRANT_API_KEY`
+  - `EMBED_PROVIDER=openai` 但未设置 `OPENAI_API_KEY`
+- **enrich_sql 注入面收敛**:跨表反查 SQL 来自 `TABLES_JSON`(运维侧配置),启动期校验**必须是单条 SELECT**(禁分号/DDL/DML)且**必带 `%(tenant)s` 条件**,防止误配/被篡改的配置在 `vs_worker` 权限下注入任意 SQL 或泄漏跨租户数据;`fields` 非空校验避免运行时崩。
+- **凭据脱敏**:DLQ header / 归档 / 日志里的异常字符串经 `_redact` 抹掉 DSN 密码(psycopg 报错常带完整连接串),避免密码扩散到 Kafka DLQ + PG archive + stdout 三处。
+- **/healthz 不泄漏拓扑**:健康检查只回状态 + 后端类型,不再回 LLM 网关 URL;且真探测向量后端,依赖宕机回 503(K8s 探针可感知)。
 - **跨租户源库约束**:`comment(tenant_id, article_id)` 外键指向 `article(tenant_id, id)`,防止跨租户脏引用进入跨表文档。
 - **Qdrant API key 透传**:worker/rag 都支持 `QDRANT_API_KEY`;本地可不设,生产必须设。
 - **Embedding 出境门闸**:`EMBED_PROVIDER=openai` 会把源文档发给 OpenAI-compatible embeddings 端点,默认不可用;必须显式设置 `EMBED_EGRESS_ALLOWED=true`。
@@ -22,7 +26,7 @@
 
 这些组件在本仓库里只作为本地样板:
 
-- Kafka/Connect:单节点、PLAINTEXT、Connect REST 无内建鉴权。
+- Kafka/Connect:单节点、PLAINTEXT、Connect REST 无内建鉴权。**含义**:任何能向 Kafka 生产消息的进程可伪造 CDC 事件——例如构造 `op=d` 且 `before.tenant_id=<受害租户>` 删掉他人向量(worker 删除只能信 before 镜像的租户,无从二次核验已删行)。这条跨租户风险由 Kafka SASL/鉴权关闭,属本边界内,不是代码可单独修。
 - MinIO:本地对象存储样板,默认凭据只允许开发。
 - Iceberg REST fixture:测试 fixture,无鉴权。
 - Prometheus/Grafana/Jaeger/Spark/Flink UI:默认只绑 127.0.0.1,生产需统一放到受控管理网或反向代理后。

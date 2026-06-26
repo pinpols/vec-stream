@@ -123,8 +123,17 @@
 |---|---|---|
 | `r` | snapshot 读 | 当作 upsert |
 | `c` | INSERT | 构建文档 → embed → upsert |
-| `u` | UPDATE | 比对 hash:变了则删旧 chunk + 重新 embed upsert;没变跳过 |
-| `d` | DELETE | 按 PK 删除该行的所有 chunk 向量 |
+| `u` | UPDATE | 比对 hash:变了则删旧 chunk + 重新 embed upsert;没变只刷 metadata |
+| `d` | DELETE | 从 before 镜像取 `tenant_id` + PK,删除该行全部 chunk 向量 |
+
+**核心原则:CDC 事件只当「触发器」,落库始终收敛到源库当前态。** upsert 路径(c/r/u)拿到事件后**反查一次源库**取当前行,以它为准重建文档——而非信任事件里的 `after` 镜像。这同时消解两类竞态:① DLQ 重投的旧 `after` 覆盖新状态;② 跨表反查与本表事件的乱序。反查发现源行已不存在 → 直接删向量(等价 delete)。
+
+**边界与失败分类**(均有回归测试,见 `worker/tests/`):
+
+- **空内容也要删向量**:UPDATE 把可检索字段全清空时,源行还在但 `source_text` 为空 → **删旧向量**,否则留下指向空行的「幽灵向量」仍可被检索。
+- **falsy 字段不丢**:拼 `source_text` 时只跳过 `None`(列缺失),保留 `0`/`False`/`""`——否则数值零/空串被静默丢出文本,导致 hash 漂移 + 内容缺失且无报错。
+- **NaN/Inf 向量拒绝**:embedding 含非有限值(模型 bug/量化误差)当数据性错误进 DLQ,不写垃圾向量。
+- **失败分类决定重试策略**:基础设施瞬时故障(PG/向量库/embed-service 连接失败超时、HTTP 429/5xx)→ **无限退避重试不进 DLQ**(进了也修不好);数据性错误(解析失败/缺字段/NaN)→ 有限重试后进 DLQ。DLQ header 里的异常字符串经脱敏(抹掉 DSN 密码)。
 
 #### (b) 确定性向量 ID(幂等基石)
 
@@ -145,7 +154,9 @@ source_text = concat(可检索字段...)
 text_hash   = sha256(source_text)
 ```
 
-变更进来先查该行上次的 `text_hash`(存在一张小元数据表 / KV 里),相同则直接跳过 embedding 与写入。生产中可省 80%+ embedding 调用。
+`text_hash` 直接存在向量记录里(pgvector 的 `text_hash` 列 / Qdrant payload),变更进来先读该行上次的 hash,相同则跳过最贵的 embedding,**只刷 metadata**(`status` 等过滤字段必须跟上,否则过滤检索用旧值)。生产中可省 80%+ embedding 调用。
+
+> 一个隐蔽缺口已堵:hash 命中但目标向量实际已不存在(并发删/丢失)时,不能假装「刷新成功」——Qdrant `update_metadata` 返回真实命中数,0 命中则**回退到全量 embed+upsert**(pgvector 同理按 rowcount 判断)。
 
 #### (d) 文档构建与字段策略
 
@@ -165,9 +176,10 @@ Sync Worker 可照搬 `batch-worker-*` 的 **CLAIM → EXECUTE → REPORT** 幂�
 ### 3.4 Embedding 层
 
 - **重要**:生成模型和 embedding 模型是两条链路。Embedding 需单独选模型,生成层只负责 RAG 最后的回答。
-- 候选:OpenAI 兼容 embeddings / 开源 bge、e5 系列(可本地部署,省钱、练部署)。
+- **可插拔后端**(`EMBED_PROVIDER` / `EMBED_SERVICE_URL`):① 进程内 SentenceTransformer(本地 bge,默认);② 独立 `embed-service`(HTTP,动态批处理,可单独扩展);③ OpenAI 兼容 embeddings(需 `EMBED_EGRESS_ALLOWED=true`)。worker 写入侧与 rag 检索侧**必须同后端同模型**,否则向量分布不一致召回失真。
 - **批量调用**:Worker 攒一批 chunk 一次性请求,提升吞吐、降成本。
-- **维度固定**:选定模型后向量维度锁死,换模型 = 全量重建索引(写进运维手册)。
+- **维度锁死 + 启动 fail-fast**:选定模型后维度锁死;换维度 = 蓝绿重建新索引(不能在旧索引上切)。Qdrant 后端对**已存在的 collection 也校验维度**,不一致直接启动失败,避免静默接受错维向量;rag/worker 间还有 `index_metadata` 校验 embedding 模型/维度/chunk 参数一致。
+- **远程后端的失败语义**:走 HTTP 的后端,连接失败/超时归入瞬时故障无限退避;服务端 429/5xx 同样当瞬时(过载应退避而非进 DLQ);仅 4xx(请求过大/非法)算数据性错误。
 
 ### 3.5 向量数据库
 
@@ -178,7 +190,10 @@ Sync Worker 可照搬 `batch-worker-*` 的 **CLAIM → EXECUTE → REPORT** 幂�
 | 起步成本 | 极低(你已有 PG) | 需多起一个服务 |
 | 过滤检索 | SQL where + 向量 | 原生 payload filter + HNSW 调优 |
 | 学习价值 | 快速跑通 | 学专用向量库的工程细节 |
+| 处理账本一致性 | **与向量写入同 PG 事务,原子** | best-effort(Qdrant 无事务,写完单独记 PG 账本,失败只 warn) |
 | 建议 | 第一阶段 | 第二阶段 |
+
+> **一致性分层(重要,别混为一谈)**:pgvector 后端里「向量写入 + processed_offsets 账本」在**同一个 PG 事务**内提交,原子。Qdrant 后端做不到(Qdrant 非事务存储),账本是写完 Qdrant 后**单独 best-effort** 写 PG,两者之间无原子性——账本仅作审计参考,不是强一致真相。两者的**投递语义都是至少一次 + 确定性 ID 幂等**(崩溃重放收敛),但审计账本的可靠性 pgvector 强于 Qdrant。选 Qdrant 时这点要进运维认知。
 
 **Schema(pgvector 示例)**:
 
@@ -199,7 +214,7 @@ CREATE INDEX ON doc_vectors USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 ```
 
-> 多租隔离:所有检索 **必须** 带 `tenant_id` 过滤(沿用你对多租的纪律),先按 tenant 过滤再向量召回。
+> 多租隔离(双保险):tenant 从 API key 推导(请求体的 `tenant_id` 被忽略),pgvector 后端**既走 PG RLS(`SET app.tenant` 事务局部)又带显式 `WHERE tenant_id=`**——即便漏写 WHERE,RLS 兜底不泄漏;Qdrant 后端用 payload filter 的 `must` 条件。先按 tenant 过滤再向量召回。
 
 ### 3.6 RAG 服务
 
@@ -237,13 +252,17 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 
 | 关注点 | 方案 |
 |---|---|
-| 投递语义 | 至少一次 + 确定性 ID upsert = 最终幂等 |
-| 顺序 | Kafka key=主键,同行变更同分区有序 |
-| 失败重试 | 处理异常 → 退避重试 → 仍失败入 DLQ,人工 / 定时重投 |
+| 投递语义 | 至少一次 + 确定性 ID upsert = 最终幂等;事件即触发器,落库收敛到源库当前态 |
+| 顺序 | Kafka key=主键,同行变更同分区有序;反查源库进一步消解乱序 |
+| 失败重试 | 瞬时故障无限退避;数据性错误有限重试 → DLQ(上限归档,带乒乓水位线防护) |
+| 崩溃恢复 | 向量 worker:offset 处理完才 commit(pgvector 账本同事务);湖腿:S3 checkpoint + restart |
 | Embedding 限流 | 批量 + 令牌桶限速,避免打爆 API;snapshot 全量阶段尤其注意 |
 | WAL 膨胀 | 监控 replication slot lag,Worker 长时间挂掉要告警(否则 PG 磁盘爆) |
 | 重建索引 | 换 embedding 模型 / 切分策略变更 → 触发全量重放(Debezium re-snapshot) |
-| 可观测 | 同步延迟(CDC→向量)、embedding 调用量/命中跳过率、DLQ 积压 |
+| 湖腿并发写 | Hudi 默认无锁,**流是唯一写者**(批量回填须流停时跑);真多 writer 才上 ZK 锁(S3 不支持零依赖文件锁) |
+| 可观测 | 同步延迟(CDC→向量)、embedding 调用量/命中跳过率、DLQ 积压、流速率/批延迟 |
+
+> **故障注入实测**(`docs/test-plan-fault-injection.md`):真 `docker kill` 流容器 / 重启 connector,验证 T1 崩溃恢复不丢、T2 崩溃窗口内 update 传播、T3 幂等不重不漏(Hudi 行数 == 源库,精确镜像)、T4 connector 重启 slot 续传——全过。
 
 ---
 

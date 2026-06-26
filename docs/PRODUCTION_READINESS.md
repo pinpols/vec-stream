@@ -11,7 +11,7 @@
 | CDC 语义 | A- | Debezium JSON 统一复用;insert/update/delete/snapshot 均有落地路径;保留 schema governance 缺口 |
 | 向量/RAG | A | 确定性 ID、hash 去重、metadata 刷新、RLS、API key 租户绑定、rerank、/ask 出境门闸、评估模块已形成闭环 |
 | Lakehouse | B+ | Spark 统一写 Hudi/Iceberg,批量+连续流+checkpoint+维护脚本具备;仍是 local Spark runner,不是托管计算集群 |
-| 可靠性 | B+ | at-least-once + 幂等写、processed_offsets、DLQ 上限归档、slot lag 告警路径具备;生产 HA 依赖外部托管或独立部署 |
+| 可靠性 | B+ | at-least-once + 幂等写、processed_offsets、DLQ 上限归档、slot lag 告警;瞬时/数据性故障分类、崩溃恢复已**故障注入实测**;生产 HA 仍依赖外部托管或独立部署 |
 | 可观测 | B+ | Prometheus/Grafana/alerts/OTel 可选链路已具备;生产还需 Alertmanager、日志采集和告警值校准 |
 | 安全 | A- | 最小权限账号、RLS、API key->tenant、loopback 端口、生产防呆、Qdrant API key 透传具备;生产还需 TLS/SASL、secret manager、密钥轮换 |
 | 工程化 | B+ | Python lint/test CI 已有;新增结构校验后 compose/shell/lake 脚本纳入门禁 |
@@ -49,7 +49,9 @@ CI 门禁:
 ## 3. 已闭环的生产能力
 
 - 多 sink 架构:单 Debezium connector / 单复制槽 / `cdc.public.*` 统一 topic,向量与 lakehouse 各自独立消费。
-- 幂等与一致性:向量侧确定性 `vector_id`,处理账本与 PG 写入同事务;lakehouse 按 PK upsert/delete。
+- 幂等与一致性:向量侧确定性 `vector_id`;**pgvector 后端**处理账本与向量写入同 PG 事务(原子),**Qdrant 后端**账本是写完后 best-effort 写 PG(无原子性,仅审计参考);lakehouse 按 PK upsert/delete。
+- 数据完整性硬化(均带回归测试):CDC 事件即触发器收敛源库当前态、空内容删幽灵向量、falsy 字段不丢、NaN/Inf 向量拒绝、瞬时 vs 数据性故障分类(embed-service 宕机无限退避非进 DLQ)、hash 命中但向量缺失回退全量 upsert。
+- 故障恢复实测:`docs/test-plan-fault-injection.md` 真 kill 流容器 / 重启 connector,崩溃恢复不丢、update 传播、幂等不重不漏(Hudi==源库)、slot 续传全过。
 - 安全隔离:源库最小权限账号,RAG key 推导 tenant,PG RLS 做强制隔离;`/ask` 需显式允许 LLM 数据出境。
 - 暴露面收敛:本地 compose 端口默认只绑定 `127.0.0.1`;CI 会拒绝新增未绑定 loopback 的端口映射。
 - 生产防呆:`APP_ENV=production` 会拒绝 dev key、弱 DSN、Qdrant 无 API key。
