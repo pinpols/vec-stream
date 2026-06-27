@@ -6,6 +6,8 @@ requires-python = ">=3.12"
 dependencies = [
     "confluent-kafka>=2.5",
     "psycopg[binary]>=3.2",
+    "numpy<2",
+    "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "sentence-transformers>=3.0",
     "qdrant-client>=1.12",
     "prometheus-client>=0.20",
