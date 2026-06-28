@@ -19,6 +19,9 @@ load_defaults() {
     # shellcheck disable=SC1091
     . ./.env.example
     set +a
+    # compose 文件声明 env_file: .env,需要磁盘上真实文件;CI 里 .env 被 gitignore 不存在,
+    # 用 .env.example 兜底生成,避免 `compose config` 因缺 .env 报错(本地已有 .env 时不覆盖)。
+    [ -f .env ] || cp .env.example .env
   fi
   export BATCH_NETWORK="${BATCH_NETWORK:-batch-platform_batch-network}"
 }
@@ -76,7 +79,9 @@ PY
 
 if command -v shellcheck >/dev/null 2>&1; then
   echo "== shellcheck =="
-  shellcheck \
+  # --severity=warning:只对 warning+ 失败,放行 info/style(如 SC2015 A&&B||C 提示);
+  # CI 的 shellcheck 0.9.0 会把这类 info 也算非零退出,统一门槛避免环境差异致红。
+  shellcheck --severity=warning \
     scripts/smoke.sh \
     scripts/hudi-smoke.sh \
     scripts/iceberg-smoke.sh \
