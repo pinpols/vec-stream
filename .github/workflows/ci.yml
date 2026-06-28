@@ -33,11 +33,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module:
-          - worker
-          - rag
-          - eval
-          - embed-service
+        include:
+          - { module: worker, cov: src }
+          - { module: rag, cov: src }
+          - { module: eval, cov: golden }
+          - { module: embed-service, cov: src }
 
     defaults:
       run:
@@ -65,5 +65,6 @@ jobs:
       - name: Ruff format check
         run: uvx ruff@0.8.6 format --check --config ../ruff.toml .
 
-      - name: Pytest
-        run: uv run --group dev python -m pytest -q
+      # 覆盖率:先报告(term-missing),从 CI 日志读各模块真实覆盖率后再设 per-module 棘轮门槛。
+      - name: Pytest (coverage)
+        run: uv run --group dev --with pytest-cov python -m pytest -q --cov=${{ matrix.cov }} --cov-report=term-missing
