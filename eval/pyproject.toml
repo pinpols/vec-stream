@@ -1,5 +1,6 @@
 [project]
 name = "vec-stream-eval"
+license = {text = "Apache-2.0"}
 version = "0.1.0"
 description = "Evaluation harness for vec_stream RAG: retrieval quality (recall@k/MRR), generation quality (faithfulness/citation coverage), and PG vs source consistency reconciliation."
 requires-python = ">=3.12"

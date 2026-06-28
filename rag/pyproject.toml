@@ -1,5 +1,6 @@
 [project]
 name = "vec-stream-rag"
+license = {text = "Apache-2.0"}
 version = "0.1.0"
 description = "RAG service: semantic /search over pgvector or Qdrant, /ask via OpenAI-compatible APIs"
 requires-python = ">=3.12"

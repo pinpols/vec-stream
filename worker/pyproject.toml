@@ -1,5 +1,6 @@
 [project]
 name = "vec-stream-worker"
+license = {text = "Apache-2.0"}
 version = "0.1.0"
 description = "Vector Sync Worker: consume Debezium CDC events, embed text, upsert into pgvector"
 requires-python = ">=3.12"
