@@ -33,11 +33,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # floor = 覆盖率棘轮门槛(略低于当前实测,只防回退不卡现状;升上去后可逐步抬)
         include:
-          - { module: worker, cov: src }
-          - { module: rag, cov: src }
-          - { module: eval, cov: golden }
-          - { module: embed-service, cov: src }
+          - { module: worker, cov: src, floor: 55 }
+          - { module: rag, cov: src, floor: 60 }
+          - { module: eval, cov: src, floor: 40 }
+          - { module: embed-service, cov: src, floor: 75 }
 
     defaults:
       run:
@@ -65,6 +66,6 @@ jobs:
       - name: Ruff format check
         run: uvx ruff@0.8.6 format --check --config ../ruff.toml .
 
-      # 覆盖率:先报告(term-missing),从 CI 日志读各模块真实覆盖率后再设 per-module 棘轮门槛。
+      # 覆盖率棘轮:per-module --cov-fail-under(实测 worker58/rag66/embed81),只防回退。
       - name: Pytest (coverage)
-        run: uv run --group dev --with pytest-cov python -m pytest -q --cov=${{ matrix.cov }} --cov-report=term-missing
+        run: uv run --group dev --with pytest-cov python -m pytest -q --cov=${{ matrix.cov }} --cov-report=term-missing --cov-fail-under=${{ matrix.floor }}
