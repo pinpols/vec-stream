@@ -30,7 +30,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:  # noqa: BLE001
+    # torch 缺失时 sentence_transformers 导入会抛 NameError/ImportError;
+    # 测试 mock 模型、运行期才真加载,这里降级为 None 让模块可被导入。
+    SentenceTransformer = None
 
 from embed_service.tracing import instrument_app, setup_tracing
 
