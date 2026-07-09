@@ -21,6 +21,7 @@ services:
       DEBEZIUM_PASSWORD: ${DEBEZIUM_PASSWORD}
       WORKER_PASSWORD: ${WORKER_PASSWORD}
       RAG_PASSWORD: ${RAG_PASSWORD}
+      EVAL_PASSWORD: ${EVAL_PASSWORD}
     ports:
       # 宿主 5433:本机原生 Postgres 已占 127.0.0.1:5432
       - "127.0.0.1:5433:5432"

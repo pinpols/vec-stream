@@ -5,7 +5,7 @@
 # 由 Postgres 官方镜像的 docker-entrypoint 在 01-init.sql 之后自动执行
 # (仅 fresh volume 首次初始化时跑)。对**已有库**手动应用:
 #   docker exec -e DEBEZIUM_PASSWORD=... -e WORKER_PASSWORD=... -e RAG_PASSWORD=... \
-#     vec-stream-postgres bash /docker-entrypoint-initdb.d/02-security.sh
+#     -e EVAL_PASSWORD=... vec-stream-postgres bash /docker-entrypoint-initdb.d/02-security.sh
 # 全部幂等(角色 IF NOT EXISTS / 表 IF NOT EXISTS / 策略 DROP+CREATE),可重复跑。
 #
 # 设计要点(对应 ENTERPRISE.md 领域一/三 的 M1 项):
@@ -14,6 +14,10 @@
 #                 一条事件可写任意租户;同时 SELECT 源表做反查)。
 #   - vs_rag     :仅 doc_vectors SELECT,**不** BYPASSRLS —— 查询受 RLS 强制,
 #                 即使 SQL 漏写 WHERE 也越权不了(机制,非纪律)。
+#   - vs_eval    :对账工具(eval reconcile)只读:源表 + doc_vectors SELECT,
+#                 BYPASSRLS(跨租户对账是运维态诉求;一次性 CLI,不对外服务)。
+#   ⚠️ 本脚本只在 fresh volume 首次初始化自动执行;**已有库**新增角色(如
+#     vs_eval)不会自动出现,须按上面的 docker exec 方式手动重放一次。
 #   - processed_offsets:与向量写入同事务提交的"处理一次"账本(审计闭环)。
 # ============================================================================
 set -euo pipefail
@@ -21,11 +25,13 @@ set -euo pipefail
 : "${DEBEZIUM_PASSWORD:?need DEBEZIUM_PASSWORD}"
 : "${WORKER_PASSWORD:?need WORKER_PASSWORD}"
 : "${RAG_PASSWORD:?need RAG_PASSWORD}"
+: "${EVAL_PASSWORD:?need EVAL_PASSWORD}"
 
 psql -v ON_ERROR_STOP=1 --username "${POSTGRES_USER:-vec_stream}" --dbname "${POSTGRES_DB:-vec_stream}" \
   -v debezium_pw="$DEBEZIUM_PASSWORD" \
   -v worker_pw="$WORKER_PASSWORD" \
-  -v rag_pw="$RAG_PASSWORD" <<'EOSQL'
+  -v rag_pw="$RAG_PASSWORD" \
+  -v eval_pw="$EVAL_PASSWORD" <<'EOSQL'
 -- ── 1) 最小权限角色(幂等创建,密码在顶层 ALTER 注入)──
 DO $do$
 BEGIN
@@ -38,6 +44,12 @@ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vs_rag') THEN
     CREATE ROLE vs_rag WITH LOGIN;
   END IF;
+  -- vs_eval:一致性对账(eval reconcile)只读角色。需要同时读源表与全量
+  -- doc_vectors(跨租户对账是运维态诉求),给 BYPASSRLS——工具是一次性
+  -- CLI、只 SELECT,不经它对外提供查询服务。
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vs_eval') THEN
+    CREATE ROLE vs_eval WITH LOGIN BYPASSRLS;
+  END IF;
 END
 $do$;
 
@@ -45,6 +57,7 @@ $do$;
 ALTER ROLE vs_debezium PASSWORD :'debezium_pw';
 ALTER ROLE vs_worker   PASSWORD :'worker_pw';
 ALTER ROLE vs_rag      PASSWORD :'rag_pw';
+ALTER ROLE vs_eval     PASSWORD :'eval_pw';
 
 -- ── 2) 处理账本:每 (topic, partition) 的最新已处理 offset,与向量写入同事务提交 ──
 CREATE TABLE IF NOT EXISTS processed_offsets (
@@ -99,12 +112,13 @@ $do$;
 
 -- ── 4) 授权:各角色最小集 ──
 -- schema 访问(PG15+ 默认已给 PUBLIC USAGE,这里显式声明更稳)
-GRANT USAGE ON SCHEMA public TO vs_debezium, vs_worker, vs_rag;
--- 源表:debezium 复制读 + worker 反查读
-GRANT SELECT ON article, product, comment TO vs_debezium, vs_worker;
--- 向量表:worker 全 DML;rag 只读(受 RLS)
+GRANT USAGE ON SCHEMA public TO vs_debezium, vs_worker, vs_rag, vs_eval;
+-- 源表:debezium 复制读 + worker 反查读 + eval 对账读
+GRANT SELECT ON article, product, comment TO vs_debezium, vs_worker, vs_eval;
+-- 向量表:worker 全 DML;rag 只读(受 RLS);eval 只读(BYPASSRLS,跨租户对账)
 GRANT SELECT, INSERT, UPDATE, DELETE ON doc_vectors TO vs_worker;
 GRANT SELECT ON doc_vectors TO vs_rag;
+GRANT SELECT ON doc_vectors TO vs_eval;
 -- 索引元数据:worker 写,rag 读并做启动期一致性校验
 GRANT SELECT, INSERT, UPDATE ON index_metadata TO vs_worker;
 GRANT SELECT ON index_metadata TO vs_rag;

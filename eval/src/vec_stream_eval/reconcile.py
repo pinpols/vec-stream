@@ -4,18 +4,43 @@
   missing  = 源表有、向量库没有(漏 embed,正向漂移,通常该报警)
   orphan   = 向量库有、源表没有(源行删了但向量没清,负向漂移)
 
-源表只有 article/product/comment 是 CDC 监听对象;doc_vectors.source_table
-取值即这些表名。DSN 从 env(RAG_PG_DSN / PG_DSN)。
+对账范围 = 「应索引表」:与 worker/config.py 的 TABLES 语义同源——reembed_parent
+子表(如 comment)自身永不进 doc_vectors(变更只触发父表重 embed),把它算进
+源表会恒报 missing=N 假漂移,必须排除。支持与 worker 相同的 TABLES_JSON 环境
+变量整体覆盖(两边共用同一配置源);未设置时回退到 worker DEFAULT_TABLES 的
+镜像清单 ("article", "product")。DSN 从 env(RAG_PG_DSN / PG_DSN)。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 
-# doc_vectors.source_table -> 源表名(此处一致;留映射点以防将来改名)
-SOURCE_TABLES = ("article", "product", "comment")
+# 回退清单:worker/config.py DEFAULT_TABLES 中非 reembed_parent 的表
+# (article/product;comment 是 reembed_parent 子表,不进向量库)
+_DEFAULT_INDEXABLE = ("article", "product")
+
+# 表名要拼进 SQL(psycopg 参数化不支持标识符),白名单校验防注入/误配
+_IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$", re.IGNORECASE)
+
+
+def source_tables() -> tuple[str, ...]:
+    """派生应对账的源表清单(排除 reembed_parent 子表)。
+
+    优先读 worker 同款 TABLES_JSON(配置同源,worker 加表/换表时对账自动跟随);
+    未设置时回退 _DEFAULT_INDEXABLE。
+    """
+    raw = os.getenv("TABLES_JSON", "")
+    if not raw:
+        return _DEFAULT_INDEXABLE
+    tables = json.loads(raw)
+    names = tuple(sorted(n for n, c in tables.items() if not c.get("reembed_parent")))
+    for n in names:
+        if not _IDENT_RE.match(n):
+            raise ValueError(f"TABLES_JSON 表名非法(只允许字母/数字/下划线):{n!r}")
+    return names
 
 
 @dataclass
@@ -128,15 +153,54 @@ def reconcile(
     )
 
 
+def _preflight(conn, tables: tuple[str, ...]) -> None:
+    """启动自检:权限 / RLS 问题明确报错,不静默产出假报告。
+
+    两类陷阱(随箱 compose 曾用 vs_rag 跑对账,两个都踩):
+      - 源表 SELECT 权限不足 → 崩在查询半路;这里一次性报全,并提示用 vs_eval
+        角色(db/init/02-security.sh;已有库需手动重放该脚本才有该角色)。
+      - 非 BYPASSRLS 角色读 doc_vectors:未 set app.tenant 时 RLS 静默返 0 行 →
+        对账输出「全部 missing」的假报告,比崩溃更危险,必须 fail loud。
+    """
+    with conn.cursor() as cur:
+        denied: list[str] = []
+        for t in (*tables, "doc_vectors"):
+            cur.execute("SELECT to_regclass('public.' || %s)", (t,))
+            if cur.fetchone()[0] is None:
+                continue  # 表不存在由查询侧跳过,不算权限问题
+            cur.execute("SELECT has_table_privilege(current_user, %s, 'SELECT')", (t,))
+            if not cur.fetchone()[0]:
+                denied.append(t)
+        if denied:
+            raise SystemExit(
+                f"当前角色对表 {denied} 无 SELECT 权限,对账无法进行。"
+                "请用 vs_eval 角色连接(EVAL_PG_DSN;角色由 db/init/02-security.sh 创建,"
+                "已有库需手动重放该脚本)。"
+            )
+        cur.execute(
+            "SELECT r.rolbypassrls, c.relrowsecurity FROM pg_roles r, pg_class c "
+            "WHERE r.rolname = current_user AND c.oid = to_regclass('public.doc_vectors')"
+        )
+        row = cur.fetchone()
+        if row is not None and row[1] and not row[0]:
+            raise SystemExit(
+                "doc_vectors 启用了 RLS 且当前角色无 BYPASSRLS:未 set app.tenant 时"
+                "查询静默返 0 行,对账会产出「全部 missing」的假报告。"
+                "请用 vs_eval(BYPASSRLS,运维态只读工具)连接,见 db/init/02-security.sh。"
+            )
+
+
 def _query_db(dsn: str):
     """连 PG(只读),拉源表与 doc_vectors 的 (tenant, table) -> set(source_pk)。"""
     import psycopg
 
+    tables = source_tables()
     indexed_pks: dict[tuple[str, str], set[str]] = {}
     source_pks: dict[tuple[str, str], set[str]] = {}
     source_counts: dict[tuple[str, str], int] = {}
 
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        _preflight(conn, tables)
         # 向量侧:每个 (tenant, table) 已索引的 distinct source_pk 集合
         cur.execute(
             "SELECT tenant_id, source_table, source_pk "
@@ -145,10 +209,10 @@ def _query_db(dsn: str):
         for tenant, table, pk in cur.fetchall():
             indexed_pks.setdefault((tenant, table), set()).add(str(pk))
 
-        # 源侧:逐源表拉 (tenant_id, id)
-        for table in SOURCE_TABLES:
+        # 源侧:逐应索引表拉 (tenant_id, id)(表名过 _IDENT_RE 白名单校验)
+        for table in tables:
             try:
-                cur.execute(f"SELECT tenant_id, id FROM {table}")  # noqa: S608 (固定白名单)
+                cur.execute(f"SELECT tenant_id, id FROM {table}")  # noqa: S608
             except psycopg.errors.UndefinedTable:
                 continue
             for tenant, pk in cur.fetchall():
