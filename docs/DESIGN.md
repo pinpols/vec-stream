@@ -103,7 +103,7 @@
 - **MySQL**:binlog(`ROW` 格式),需开启 binlog 并授予 `REPLICATION SLAVE` 权限。
 - **快照策略**:`snapshot.mode=initial`——首次全量快照(事件类型 `r`)后转增量流(`c/u/d`)。
 - **Topic 命名**:`cdc.<server>.<schema>.<table>`,每表一个 topic,key = 主键。
-- **Schema 变更**:Debezium 自带 schema 演进;DDL 变更通过 schema history topic 跟踪。MVP 阶段约定上游不做破坏性 DDL,后续再做兼容策略。
+- **Schema 变更**:PostgreSQL connector **没有** schema history topic 机制(那是 MySQL 等 binlog 系 connector 的),它在读取时实时从数据库元数据获取表结构。MVP 阶段约定上游不做破坏性 DDL,后续再做兼容策略。
 
 > 关键学习点:replication slot 不消费会撑爆磁盘 WAL;snapshot 与 streaming 的衔接点(LSN / GTID);Debezium 的 `before` / `after` 镜像。
 
@@ -134,6 +134,8 @@
 - **falsy 字段不丢**:拼 `source_text` 时只跳过 `None`(列缺失),保留 `0`/`False`/`""`——否则数值零/空串被静默丢出文本,导致 hash 漂移 + 内容缺失且无报错。
 - **NaN/Inf 向量拒绝**:embedding 含非有限值(模型 bug/量化误差)当数据性错误进 DLQ,不写垃圾向量。
 - **失败分类决定重试策略**:基础设施瞬时故障(PG/向量库/embed-service 连接失败超时、HTTP 429/5xx)→ **无限退避重试不进 DLQ**(进了也修不好);数据性错误(解析失败/缺字段/NaN)→ 有限重试后进 DLQ。DLQ header 里的异常字符串经脱敏(抹掉 DSN 密码)。
+- **TOAST 大列占位符**:pgoutput 对 UPDATE 中**未变更的 TOAST 大列**在 after 镜像填占位符 `__debezium_unavailable_value`(REPLICA IDENTITY FULL 只保证 before 完整;bytea 列经 JSON base64 后是其 base64 形态)。worker 不受影响(upsert 一律反查源库当前态,不信 after);Hudi/Iceberg 湖腿已对字符串列做「占位符 → 回退 before」(`spark-lake/lakehouse_logic.py`);Flink→Paimon 参考腿 SQL 层做不了(debezium-json 拆 -U/+U,无状态拿不到 before),**记为该腿已知边界**,见 `flink-paimon/sql/cdc_to_paimon.sql` 头注。
+- **tenant_id 视为不可变(变更有在线兜底)**:业务上 tenant_id 不应变;若真发生 UPDATE 改 tenant_id,worker 会按事件 before 镜像的旧租户**顺带删一次旧向量**(防孤儿),新向量按反查后的新租户写入。该兜底只覆盖被正常消费的事件——事件丢失/DLQ 归档跳过时仍可能留孤儿,需离线 reconcile 对账清理。
 
 #### (b) 确定性向量 ID(幂等基石)
 
@@ -256,7 +258,7 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 | 顺序 | Kafka key=主键,同行变更同分区有序;反查源库进一步消解乱序 |
 | 失败重试 | 瞬时故障无限退避;数据性错误有限重试 → DLQ(上限归档,带乒乓水位线防护) |
 | 崩溃恢复 | 向量 worker:offset 处理完才 commit(pgvector 账本同事务);湖腿:S3 checkpoint + restart |
-| Embedding 限流 | 批量 + 令牌桶限速,避免打爆 API;snapshot 全量阶段尤其注意 |
+| Embedding 限流 | 批量切片(MAX_BATCH)+ 队列天然背压:429/5xx 时指数退避重试、阻塞本分区消费(无令牌桶);snapshot 全量阶段尤其注意 |
 | WAL 膨胀 | 监控 replication slot lag,Worker 长时间挂掉要告警(否则 PG 磁盘爆) |
 | 重建索引 | 换 embedding 模型 / 切分策略变更 → 触发全量重放(Debezium re-snapshot) |
 | 湖腿并发写 | Hudi 默认无锁,**流是唯一写者**(批量回填须流停时跑);真多 writer 才上 ZK 锁(S3 不支持零依赖文件锁) |

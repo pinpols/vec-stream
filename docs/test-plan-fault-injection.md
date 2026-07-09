@@ -20,6 +20,9 @@
   让流容器被 kill 后从断点续跑,崩溃窗口内的 insert/update 都不丢(T1/T2)。
 - **有效 exactly-once**:Hudi 按 `recordkey=tenant_id,id` upsert,重放同一 offset 区间只是再次 upsert 同一业务记录,
   不产生重复行——经 3 次流重启后 **Hudi 行数与源库精确相等(13==13)**,既不重也不漏(T3)。
+  > 限定:T3 的"精确镜像"判据是**行数/主键集合**,不含逐列值比对。若崩溃窗口内的 UPDATE
+  > 未改动 TOAST 大列,after 镜像里是 `__debezium_unavailable_value` 占位符,列值精确性
+  > 依赖「占位符 → 回退 before」逻辑(见 DESIGN.md §3.3(a) 边界清单),行数结论不受影响。
   > 注:T3 脚本里"期望==2"是测试预期写错了——T0 清了 checkpoint 会从 earliest 重放**整个 topic 历史**,
   > 故表里是所有历史 id 而非本轮 2 行;改用"Hudi==PG"才是正确的不重不漏判据。
 - **connector 容错**:Debezium replication slot 持久化消费位点,connect 容器重启后从 slot 续传,不丢变更(T4)。
