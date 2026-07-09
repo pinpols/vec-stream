@@ -10,7 +10,8 @@
 未配置的表跳过(进 Debezium include.list 但没配映射 = 显式不同步)。
 
 投递语义:至少一次 —— 处理成功后才 commit offset;处理失败退避重试,
-重试耗尽发 DLQ 后 commit(确定性 vector_id 保证重放幂等)。
+重试耗尽发 DLQ 后 commit(确定性 vector_id 保证重放幂等);
+DLQ 投递本身失败则抛异常不 commit(进程退出重启后重试,消息不蒸发)。
 """
 
 import json
@@ -339,6 +340,15 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
     # 失败再进 DLQ 时计数随之累加,达上限后由 dlq_replay 归档,不再无限重投。
     incoming = dict(msg.headers() or [])
     replay_count = (incoming.get("replay_count") or b"0").decode() or "0"
+    # DLQ 投递必须校验结果:不校验的话 broker 拒收/超时 → 消息静默丢失 + offset
+    # 照常 commit,毒消息凭空蒸发(既不在 DLQ 也不会再被消费)。delivery callback
+    # 收集失败 + flush 返回残留数,任一失败抛异常 → 调用方不 commit,进程重启后重试。
+    delivery_failures: list = []
+
+    def _dlq_delivery(err, _m):
+        if err is not None:
+            delivery_failures.append(err)
+
     dlq.produce(
         cfg.dlq_topic,
         key=msg.key(),
@@ -350,8 +360,15 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
             "error": _redact(last_err)[:500],
             "replay_count": replay_count,
         },
+        on_delivery=_dlq_delivery,
     )
-    dlq.flush(10)
+    remaining = dlq.flush(10)
+    if delivery_failures or remaining:
+        raise RuntimeError(
+            f"DLQ produce to {cfg.dlq_topic} failed "
+            f"(failures={[str(e) for e in delivery_failures]}, un-flushed={remaining}); "
+            "refusing to commit offset, message will be retried"
+        )
 
 
 def run() -> None:
