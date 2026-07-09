@@ -171,6 +171,24 @@ def _reembed_parent(
     )
 
 
+def _cleanup_old_tenant(event, table, pk, tenant, sink: Sink, offset_ref) -> None:
+    """tenant_id 变更兜底:vector_id 含 tenant,租户变更后旧租户下的向量成孤儿
+    (新租户的 upsert/delete 都过滤不到)。事件 before 镜像的租户与即将写入的
+    租户不同时,按旧租户顺带删一次(RI FULL 保证 before 完整;删除幂等,
+    重放旧事件误删不存在的行无副作用)。事件丢失场景仍需离线对账,见 DESIGN.md。"""
+    before_tenant = (event.get("before") or {}).get("tenant_id")
+    if before_tenant is not None and before_tenant != tenant:
+        removed = sink.delete_row(before_tenant, table, str(pk), offset_ref=offset_ref)
+        log.info(
+            "%s pk=%s tenant_id 变更 %s→%s,清理旧租户向量 %s 条",
+            table,
+            pk,
+            before_tenant,
+            tenant,
+            _chunks_str(removed),
+        )
+
+
 def _handle_upsert(
     event, table, table_cfg, pk_field, cfg, embedder, sink: Sink, source_db, offset_ref
 ) -> str:
@@ -188,11 +206,13 @@ def _handle_upsert(
         current = source_db.fetch_row(table, pk_field, pk)
         if current is None:
             tenant = after.get("tenant_id", "default")
+            _cleanup_old_tenant(event, table, pk, tenant, sink, offset_ref)
             deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
             log.info("%s pk=%s 源行已不存在,清理向量 %s 条", table, pk, _chunks_str(deleted))
             return "deleted"
         after = current
     tenant = after.get("tenant_id", "default")
+    _cleanup_old_tenant(event, table, pk, tenant, sink, offset_ref)
     source_text = build_source_text(after, table_cfg["fields"])
     if not source_text.strip():
         # 行还在但内容被清空(如 UPDATE 把正文置空):必须删掉旧向量,否则留下
