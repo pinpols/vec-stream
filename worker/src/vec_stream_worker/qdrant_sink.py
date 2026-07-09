@@ -36,8 +36,10 @@ class QdrantSink:
     ):
         self.client = QdrantClient(url=url, api_key=api_key or None)
         self.collection = collection
-        # 账本写在 PG 里(Qdrant 无事务):best-effort,无 dsn 则不记账本
+        # 账本写在 PG 里(Qdrant 无事务):best-effort,无 dsn 则不记账本;
+        # BestEffortLedger 持懒重建常驻连接,不再每事件新建连接(断连自愈)
         self._ledger_dsn = ledger_dsn
+        self._ledger = ledger.BestEffortLedger(ledger_dsn)
         if not self.client.collection_exists(collection):
             self.client.create_collection(
                 collection_name=collection,
@@ -63,7 +65,7 @@ class QdrantSink:
 
     def _record_offset(self, offset_ref: tuple[str, int, int] | None) -> None:
         """best-effort 把已处理 offset 记进 PG 账本(SQL 共享自 ledger,单调推进)。"""
-        ledger.record_best_effort(self._ledger_dsn, offset_ref, log)
+        self._ledger.record(offset_ref, log)
 
     def last_processed_offset(self, topic: str, partition: int) -> int | None:
         """账本里该 (topic, partition) 的最新已处理 offset,供测试/审计查询。
@@ -173,4 +175,5 @@ class QdrantSink:
         return -1  # qdrant delete 不返回条数(-1 = 后端不提供,调用方据此显示)
 
     def close(self) -> None:
+        self._ledger.close()
         self.client.close()
