@@ -7,7 +7,7 @@ table=<name>:单表。STREAM_MODE=true 走 Structured Streaming,否则批量。
 import os
 import sys
 
-from lakehouse_logic import EVENT_POS_FORMAT, normalize_hudi_record_key
+from lakehouse_logic import EVENT_POS_FORMAT, UNAVAILABLE_VALUES, normalize_hudi_record_key
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import coalesce, col, countDistinct, format_string, from_json, lit, when
 from pyspark.sql.types import LongType, StringType, StructField, StructType
@@ -53,12 +53,21 @@ def _envelope(cols):
     )
 
 
-def _value(src, name):
+def _value(is_del, name, dtype):
+    before_v = col("e.before").getField(name)
+    after_v = col("e.after").getField(name)
+    # TOAST 边界:pgoutput 对 UPDATE 中未变更的 TOAST 大列在 after 里填占位符
+    # __debezium_unavailable_value(bytea 列经 JSON base64 后是其 base64 形态);
+    # REPLICA IDENTITY FULL 保证 before 镜像有真值 → 占位符回退 before,
+    # 否则占位符会当成"新值"写进湖表,静默损坏大文本列。至少覆盖全部字符串列。
+    if isinstance(dtype, StringType):
+        after_v = when(after_v.isin(*UNAVAILABLE_VALUES), before_v).otherwise(after_v)
+    v = when(is_del, before_v).otherwise(after_v)
     # tenant_id 是分区路径,null 会落 __HIVE_DEFAULT_PARTITION__ 且与 GLOBAL_SIMPLE 跨分区
     # 移动打架,统一兜底到固定占位符,保证分区路径稳定。
     if name == "tenant_id":
-        return coalesce(src.getField(name), lit("__unknown__")).alias(name)
-    return src.getField(name).alias(name)
+        v = coalesce(v, lit("__unknown__"))
+    return v.alias(name)
 
 
 def _flatten(df_kafka, cols, envelope):
@@ -71,9 +80,8 @@ def _flatten(df_kafka, cols, envelope):
         .where(col("e").isNotNull() & col("e.op").isNotNull())
     )
     is_del = col("e.op") == "d"
-    src = when(is_del, col("e.before")).otherwise(col("e.after"))
     flat = parsed.select(
-        *[_value(src, n) for n, _ in cols],
+        *[_value(is_del, n, t) for n, t in cols],
         col("_partition"),
         col("_off"),
         # precombine 优先用 Postgres Debezium source.lsn;老消息/非 PG 回退 ts_ms。

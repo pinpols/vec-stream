@@ -10,7 +10,8 @@
 未配置的表跳过(进 Debezium include.list 但没配映射 = 显式不同步)。
 
 投递语义:至少一次 —— 处理成功后才 commit offset;处理失败退避重试,
-重试耗尽发 DLQ 后 commit(确定性 vector_id 保证重放幂等)。
+重试耗尽发 DLQ 后 commit(确定性 vector_id 保证重放幂等);
+DLQ 投递本身失败则抛异常不 commit(进程退出重启后重试,消息不蒸发)。
 """
 
 import json
@@ -170,6 +171,24 @@ def _reembed_parent(
     )
 
 
+def _cleanup_old_tenant(event, table, pk, tenant, sink: Sink, offset_ref) -> None:
+    """tenant_id 变更兜底:vector_id 含 tenant,租户变更后旧租户下的向量成孤儿
+    (新租户的 upsert/delete 都过滤不到)。事件 before 镜像的租户与即将写入的
+    租户不同时,按旧租户顺带删一次(RI FULL 保证 before 完整;删除幂等,
+    重放旧事件误删不存在的行无副作用)。事件丢失场景仍需离线对账,见 DESIGN.md。"""
+    before_tenant = (event.get("before") or {}).get("tenant_id")
+    if before_tenant is not None and before_tenant != tenant:
+        removed = sink.delete_row(before_tenant, table, str(pk), offset_ref=offset_ref)
+        log.info(
+            "%s pk=%s tenant_id 变更 %s→%s,清理旧租户向量 %s 条",
+            table,
+            pk,
+            before_tenant,
+            tenant,
+            _chunks_str(removed),
+        )
+
+
 def _handle_upsert(
     event, table, table_cfg, pk_field, cfg, embedder, sink: Sink, source_db, offset_ref
 ) -> str:
@@ -187,11 +206,13 @@ def _handle_upsert(
         current = source_db.fetch_row(table, pk_field, pk)
         if current is None:
             tenant = after.get("tenant_id", "default")
+            _cleanup_old_tenant(event, table, pk, tenant, sink, offset_ref)
             deleted = sink.delete_row(tenant, table, str(pk), offset_ref=offset_ref)
             log.info("%s pk=%s 源行已不存在,清理向量 %s 条", table, pk, _chunks_str(deleted))
             return "deleted"
         after = current
     tenant = after.get("tenant_id", "default")
+    _cleanup_old_tenant(event, table, pk, tenant, sink, offset_ref)
     source_text = build_source_text(after, table_cfg["fields"])
     if not source_text.strip():
         # 行还在但内容被清空(如 UPDATE 把正文置空):必须删掉旧向量,否则留下
@@ -339,6 +360,15 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
     # 失败再进 DLQ 时计数随之累加,达上限后由 dlq_replay 归档,不再无限重投。
     incoming = dict(msg.headers() or [])
     replay_count = (incoming.get("replay_count") or b"0").decode() or "0"
+    # DLQ 投递必须校验结果:不校验的话 broker 拒收/超时 → 消息静默丢失 + offset
+    # 照常 commit,毒消息凭空蒸发(既不在 DLQ 也不会再被消费)。delivery callback
+    # 收集失败 + flush 返回残留数,任一失败抛异常 → 调用方不 commit,进程重启后重试。
+    delivery_failures: list = []
+
+    def _dlq_delivery(err, _m):
+        if err is not None:
+            delivery_failures.append(err)
+
     dlq.produce(
         cfg.dlq_topic,
         key=msg.key(),
@@ -350,8 +380,15 @@ def handle_message(msg, cfg: Config, embedder, sink, dlq: Producer, source_db) -
             "error": _redact(last_err)[:500],
             "replay_count": replay_count,
         },
+        on_delivery=_dlq_delivery,
     )
-    dlq.flush(10)
+    remaining = dlq.flush(10)
+    if delivery_failures or remaining:
+        raise RuntimeError(
+            f"DLQ produce to {cfg.dlq_topic} failed "
+            f"(failures={[str(e) for e in delivery_failures]}, un-flushed={remaining}); "
+            "refusing to commit offset, message will be retried"
+        )
 
 
 def run() -> None:

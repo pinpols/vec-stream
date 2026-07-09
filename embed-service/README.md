@@ -111,7 +111,7 @@ docker run -p 8200:8200 \
 消费端用 env `EMBED_SERVICE_URL` 切换:
 - **非空** → 走 HTTP 调本服务:
   - worker 写入侧:`POST /embed` `{"texts": <chunks>, "kind": "passage"}`,取 `embeddings`,
-    替换 `Embedder.embed_passages` 的进程内 encode;
+    替换 `LocalEmbedder.embed_passages` 的进程内 encode;
   - rag 检索侧:`POST /embed` `{"texts": [query], "kind": "query"}`,取 `embeddings[0]`,
     替换 `state["model"].encode(QUERY_PREFIX + query, ...)`——**注意 query 前缀交给本服务,
     rag 侧不要再拼 `QUERY_PREFIX`**。

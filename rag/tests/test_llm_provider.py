@@ -41,6 +41,8 @@ def _install_fake_openai(monkeypatch, captured):
     fake_mod = types.ModuleType("openai")
     fake_mod.OpenAI = FakeOpenAI
     monkeypatch.setitem(sys.modules, "openai", fake_mod)
+    # 单例缓存跨测试隔离:每次装假 SDK 时重置缓存的 client
+    monkeypatch.setattr(llm, "_client", None)
 
 
 def test_generate_answer_openai_compatible(monkeypatch):
@@ -59,6 +61,25 @@ def test_generate_answer_openai_compatible(monkeypatch):
     msgs = captured["messages"]
     assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
     assert "Q" in msgs[1]["content"] and "[1]" in msgs[1]["content"]
+
+
+def test_generate_answer_reuses_singleton_client(monkeypatch):
+    """OpenAI client 是模块级单例:多次请求不重复 new(每请求 new 会泄漏连接池/FD)。"""
+    captured = {}
+    init_count = {"n": 0}
+    monkeypatch.setenv("LLM_EGRESS_ALLOWED", "true")
+    _install_fake_openai(monkeypatch, captured)
+    orig_init = sys.modules["openai"].OpenAI.__init__
+
+    def counting_init(self, base_url=None):
+        init_count["n"] += 1
+        orig_init(self, base_url=base_url)
+
+    monkeypatch.setattr(sys.modules["openai"].OpenAI, "__init__", counting_init)
+
+    llm.generate_answer("Q1", SOURCES)
+    llm.generate_answer("Q2", SOURCES)
+    assert init_count["n"] == 1
 
 
 def test_generate_answer_refuses_without_egress_allowance(monkeypatch):

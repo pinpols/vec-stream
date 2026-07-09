@@ -32,6 +32,17 @@ $COMPOSE run --rm -e PAIMON_SQL=verify_paimon.sql flink-paimon-sql
 - Flink 1.19.3 作业 RUNNING,消费 `cdc.public.article`(debezium-json)→ Paimon 主键表 `paimon.lake.article`(warehouse `s3://warehouse/paimon`);
 - changelog 原生 upsert/delete,checkpoint 提交;**Flink 批量读回合并当前态行数 == 源表(11==11)**。
 
+## 已知边界
+
+- **TOAST 大列(本腿未修)**:pgoutput 对 UPDATE 中未变更的 TOAST 大列在 after 镜像填占位符
+  `__debezium_unavailable_value`(RI FULL 只保证 before 完整);Flink debezium-json 把
+  before/after 拆成 -U/+U 两条独立 changelog 行,无状态 SQL 拿不到 before 回退,占位符会
+  被当新值写进 Paimon 大文本列。**精确大列值以 Spark 腿(Hudi/Iceberg,已做回退)为准**;
+  详见 `flink-paimon/sql/cdc_to_paimon.sql` 头注与 `docs/DESIGN.md` §3.3(a)。
+- **主键已改复合键 `(tenant_id, id)`**(与 Hudi/Iceberg 腿对齐,多租户同 id 不互覆盖)。
+  Paimon 建表后主键不可改:老 warehouse 里已按 `(id)` 建过的表要删表(或换 warehouse 路径)
+  重放重建,`CREATE TABLE IF NOT EXISTS` 不会更新既有表结构。
+
 ## 踩的坑
 
 1. `ClassNotFoundException: org.apache.hadoop.conf.Configuration` → Paimon catalog 框架要 un-shaded hadoop;补 `flink-shaded-hadoop-2-uber`(同 Flink→Iceberg)。

@@ -123,7 +123,12 @@ curl -s -X POST http://localhost:8000/search \
   `vec_stream_sync_delay_seconds`(CDC→向量延迟)/ `vec_stream_dlq_sent_total` /
   `vec_stream_dlq_backlog` / `vec_stream_slot_lag_bytes` / `vec_stream_slot_active`;
   rag 提供 `GET /stats`(向量总量、按表分布)。
-- **已知边界**:上游 DDL 变更未做兼容(约定不做破坏性 DDL);换 embedding 模型 = 全量重建。
+- **已知边界**:上游 DDL 变更未做兼容(约定不做破坏性 DDL);换 embedding 模型 = 全量重建;
+  **TOAST 大列**——pgoutput 对 UPDATE 中未变更的 TOAST 大列在 after 镜像填占位符
+  `__debezium_unavailable_value`(RI FULL 只保证 before 完整):worker 反查源库不受影响,
+  Hudi/Iceberg 腿已做占位符→before 回退,Flink→Paimon 参考腿未修(SQL 层做不了,
+  见 `flink-paimon/sql/cdc_to_paimon.sql` 头注);tenant_id 视为不可变(变更时 worker
+  按 before 旧租户兜底删旧向量,漏消费场景需离线对账)。
 - **向量库后端**:`VECTOR_BACKEND=pgvector|qdrant`(worker 与 rag 都认)。切 Qdrant:
   `docker compose up -d qdrant`,worker 用**新 consumer group** 从 Kafka 重放即全量回填
   (`VECTOR_BACKEND=qdrant KAFKA_GROUP_ID=vec-stream-worker-qdrant`);超出 Kafka retention

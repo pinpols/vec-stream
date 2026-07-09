@@ -7,6 +7,7 @@ table=<name>:单表。STREAM_MODE=true 走 Structured Streaming,否则批量。
 import os
 import sys
 
+from lakehouse_logic import UNAVAILABLE_VALUES
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import coalesce, col, countDistinct, from_json, lit, row_number, when
 from pyspark.sql.types import LongType, StringType, StructField, StructType
@@ -72,7 +73,24 @@ def _assert_single_partition_per_record(flat):
         )
 
 
-def _latest(df_kafka, names, envelope):
+def _value(is_del, name, sql_type):
+    before_v = col("e.before").getField(name)
+    after_v = col("e.after").getField(name)
+    # TOAST 边界:pgoutput 对 UPDATE 中未变更的 TOAST 大列在 after 里填占位符
+    # __debezium_unavailable_value(bytea 列经 JSON base64 后是其 base64 形态);
+    # REPLICA IDENTITY FULL 保证 before 镜像有真值 → 占位符回退 before,
+    # 否则占位符会随 MERGE 的 UPDATE SET 写进湖表,静默损坏大文本列。覆盖全部字符串列。
+    if sql_type == "string":
+        after_v = when(after_v.isin(*UNAVAILABLE_VALUES), before_v).otherwise(after_v)
+    v = when(is_del, before_v).otherwise(after_v)
+    # tenant_id 是 MERGE 键:与 Hudi 腿对齐,null 统一 coalesce 到 __unknown__ 兜底保留,
+    # 而非静默过滤丢行(两腿行为一致,行数可互相核对)。
+    if name == "tenant_id":
+        v = coalesce(v, lit("__unknown__"))
+    return v.alias(name)
+
+
+def _latest(df_kafka, cols, envelope):
     parsed = (
         df_kafka.selectExpr("CAST(value AS STRING) AS json", "partition", "offset")
         .where(col("json").isNotNull())
@@ -80,16 +98,15 @@ def _latest(df_kafka, names, envelope):
         .where(col("e").isNotNull() & col("e.op").isNotNull())
     )
     is_del = col("e.op") == "d"
-    src = when(is_del, col("e.before")).otherwise(col("e.after"))
     flat = parsed.select(
-        *[src.getField(c).alias(c) for c in names],
+        *[_value(is_del, c, t) for c, t in cols],
         col("e.op").alias("_op"),
         col("partition").alias("_partition"),
         col("offset").alias("_off"),
         # Postgres Debezium 优先用 source.lsn 做数据库事件顺序;老消息/非 PG 回退 ts_ms。
         # 不合成 lsn*1e6+offset,避免长期运行时 long overflow。
         coalesce(col("e.source.lsn"), col("e.ts_ms"), lit(0)).alias("_lsn_or_ts"),
-    ).where(col("tenant_id").isNotNull() & col("id").isNotNull())
+    ).where(col("id").isNotNull())
     _assert_single_partition_per_record(flat)
     w = Window.partitionBy("tenant_id", "id").orderBy(col("_lsn_or_ts").desc(), col("_off").desc())
     return (
@@ -112,7 +129,7 @@ def _handler(spark, table):
     ins_cols, ins_vals = ", ".join(names), ", ".join(f"s.{c}" for c in names)
 
     def apply(sub_kafka):
-        latest = _latest(sub_kafka, names, envelope)
+        latest = _latest(sub_kafka, cols, envelope)
         if latest.rdd.isEmpty():
             return
         latest.createOrReplaceTempView("changes")
