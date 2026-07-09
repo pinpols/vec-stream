@@ -8,9 +8,9 @@ vector_id 含 tenant_id,UPDATE 改 tenant_id 后新向量写在新租户下,
 """
 
 from vec_stream_worker.config import Config
+from vec_stream_worker.main import process_event
 
 from .test_process_event import FakeEmbedder, FakeSink, ev
-from vec_stream_worker.main import process_event
 
 CFG = Config()
 
