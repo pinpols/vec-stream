@@ -9,6 +9,7 @@
 """
 
 import os
+import threading
 
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # OpenAI 兼容服务地址:留空走 openai SDK 默认(api.openai.com)。指向 agent-ctl 网关 = http://host:8400/v1
@@ -56,14 +57,29 @@ def llm_available() -> bool:
     return llm_egress_allowed() and bool(os.getenv(api_key_env()))
 
 
+# OpenAI client 模块级懒单例(同 rag/app.py lifespan 里 query_embedder 的复用模式):
+# 每请求 new OpenAI() 会每次新建 httpx 连接池,泄漏连接/FD,高负载下耗尽假死。
+# FastAPI 同步端点跑在线程池 → 双检锁防并发重复创建。
+_client = None
+_client_lock = threading.Lock()
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                from openai import OpenAI
+
+                _client = OpenAI(base_url=OPENAI_BASE_URL)  # api_key 从 OPENAI_API_KEY 读
+    return _client
+
+
 def generate_answer(question: str, sources: list[dict]) -> dict:
     """走 OpenAI 兼容 API 生成。返回 {answer, model, usage}。"""
     if not llm_egress_allowed():
         raise PermissionError("LLM_EGRESS_ALLOWED=true 未配置,拒绝向 LLM 端点发送召回资料")
-    from openai import OpenAI
-
-    client = OpenAI(base_url=OPENAI_BASE_URL)  # api_key 从 OPENAI_API_KEY 读
-    resp = client.chat.completions.create(
+    resp = _get_client().chat.completions.create(
         model=LLM_MODEL,
         max_tokens=MAX_TOKENS,
         messages=[
