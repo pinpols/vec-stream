@@ -106,7 +106,3 @@ class OpenAIEmbedder:
 
     def close(self) -> None:
         self._client.close()  # OpenAI client 底层 httpx session
-
-
-# 兼容旧引用
-Embedder = LocalEmbedder
