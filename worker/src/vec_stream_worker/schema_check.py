@@ -14,6 +14,17 @@ import psycopg
 log = logging.getLogger("schema-check")
 
 
+def _replica_identity(conn, table: str) -> str | None:
+    """返回表的 pg_class.relreplident('f'=FULL/'d'=default/'n'=nothing/'i'=index);表不存在返回 None。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT relreplident FROM pg_class WHERE oid = to_regclass('public.' || %s)",
+            (table,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
 def _existing_columns(conn, table: str) -> set[str]:
     with conn.cursor() as cur:
         cur.execute(
@@ -55,6 +66,24 @@ def check_schema(dsn: str, tables: dict) -> None:
             missing = sorted(required - cols)
             if missing:
                 problems.append(f"表 {table} 缺字段 {missing}(已有 {sorted(cols)})")
+
+        # CDC 表必须 REPLICA IDENTITY FULL:否则 UPDATE/DELETE 事件的 before 镜像
+        # 只含 PK(甚至没有)——tenant 变更删旧向量、DELETE 按 before 定位、TOAST
+        # 占位符回退全部静默失效。检查范围 = 全部配置表 + reembed_parent 的父表
+        # (父表被反查重 embed,同样依赖完整 before)。
+        cdc_tables = set(tables)
+        for tcfg in tables.values():
+            parent_cfg = tcfg.get("reembed_parent") or {}
+            if parent_cfg.get("table"):
+                cdc_tables.add(parent_cfg["table"])
+        for table in sorted(cdc_tables):
+            ident = _replica_identity(conn, table)
+            if ident is not None and ident != "f":
+                problems.append(
+                    f"表 {table} 的 REPLICA IDENTITY 是 {ident!r}(需要 'f'=FULL),"
+                    f"before 镜像不完整会静默丢删除/租户变更清理。修复:"
+                    f"ALTER TABLE {table} REPLICA IDENTITY FULL;"
+                )
 
     if problems:
         raise RuntimeError(
