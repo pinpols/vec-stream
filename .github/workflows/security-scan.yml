@@ -51,3 +51,38 @@ jobs:
         with:
           name: semgrep-report
           path: semgrep-report.json
+
+  pip-audit:
+    # SCA(依赖 CVE 扫描):对 4 个模块的 uv.lock 逐一审计。报告制起步
+    # (continue-on-error)——torch 2.2.2 因 Intel macOS 兼容锁定,存在已接受的
+    # CVE-2025-32434(见 docs/SECURITY_BOUNDARY.md「已接受的依赖风险」),硬门禁
+    # 会常红;等风险清零或接入 ignore 清单后再转硬。
+    name: pip-audit (SCA)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [worker, rag, eval, embed-service]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Export requirements from uv.lock
+        run: |
+          pip install uv
+          cd ${{ matrix.module }}
+          uv export --frozen --no-emit-project --format requirements-txt > requirements-audit.txt
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r ${{ matrix.module }}/requirements-audit.txt --disable-pip || true
+          # 同时产出 JSON 报告(失败不阻塞,报告进 artifact)
+          pip-audit -r ${{ matrix.module }}/requirements-audit.txt --disable-pip \
+            -f json -o pip-audit-${{ matrix.module }}.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pip-audit-${{ matrix.module }}
+          path: pip-audit-${{ matrix.module }}.json

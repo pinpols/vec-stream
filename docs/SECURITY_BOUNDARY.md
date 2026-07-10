@@ -31,6 +31,15 @@
 - Iceberg REST fixture:测试 fixture,无鉴权。
 - Prometheus/Grafana/Jaeger/Spark/Flink UI:默认只绑 127.0.0.1,生产需统一放到受控管理网或反向代理后。
 
+## 已接受的依赖风险
+
+- **torch 2.2.2 < 2.6,CVE-2025-32434**(`torch.load(weights_only=True)` 仍可
+  RCE):worker / embed-service 在 Intel macOS 上锁定 torch==2.2.2(2.2.x 是该
+  平台最后有 wheel 的版本,升级即失去本机可跑性)。**接受理由**:模型加载来源
+  固定为 sentence-transformers 拉取的 `BAAI/bge-*` 官方权重,不加载用户提供/
+  不可信的 checkpoint,攻击前提(恶意权重文件)在本项目使用方式下不成立。
+  生产若换 Linux/GPU 环境,应直接升级 torch≥2.6 消除该项。
+
 ## 生产准入
 
 生产部署必须满足:
