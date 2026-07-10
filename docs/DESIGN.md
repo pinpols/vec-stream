@@ -136,6 +136,12 @@
 - **失败分类决定重试策略**:基础设施瞬时故障(PG/向量库/embed-service 连接失败超时、HTTP 429/5xx)→ **无限退避重试不进 DLQ**(进了也修不好);数据性错误(解析失败/缺字段/NaN)→ 有限重试后进 DLQ。DLQ header 里的异常字符串经脱敏(抹掉 DSN 密码)。
 - **TOAST 大列占位符**:pgoutput 对 UPDATE 中**未变更的 TOAST 大列**在 after 镜像填占位符 `__debezium_unavailable_value`(REPLICA IDENTITY FULL 只保证 before 完整;bytea 列经 JSON base64 后是其 base64 形态)。worker 不受影响(upsert 一律反查源库当前态,不信 after);Hudi/Iceberg 湖腿已对字符串列做「占位符 → 回退 before」(`spark-lake/lakehouse_logic.py`);Flink→Paimon 参考腿 SQL 层做不了(debezium-json 拆 -U/+U,无状态拿不到 before),**记为该腿已知边界**,见 `flink-paimon/sql/cdc_to_paimon.sql` 头注。
 - **tenant_id 视为不可变(变更有在线兜底)**:业务上 tenant_id 不应变;若真发生 UPDATE 改 tenant_id,worker 会按事件 before 镜像的旧租户**顺带删一次旧向量**(防孤儿),新向量按反查后的新租户写入。该兜底只覆盖被正常消费的事件——事件丢失/DLQ 归档跳过时仍可能留孤儿,需离线 reconcile 对账清理。
+  **湖腿行为差异(参考级,不改写入逻辑)**:三条湖腿对 t1→t2 的处理不一致——
+  - Hudi:recordkey=`tenant_id,id`,t1→t2 后是**新 key**,upsert 只写新行,t1 旧行残留;
+  - Iceberg:`MERGE ON (tenant_id,id)` 同理,旧 (t1,id) 行不匹配、不被更新/删除,残留;
+  - Paimon(Flink 参考腿):debezium-json 的 -U/+U retraction 会撤回旧行,**行为正确**。
+  残留旧行意味着按 t1 过滤的分析查询仍能看到已迁走的数据(参考级可接受;清理 SQL 见
+  `docs/runbook-lakehouse.md` 的「tenant_id 变更清理」)。
 
 #### (b) 确定性向量 ID(幂等基石)
 
