@@ -45,9 +45,7 @@ def replay(cfg: Config, limit: int | None, dry_run: bool) -> int:
     )
     # message.max.bytes 与 worker DLQ producer(main.py)对齐:死信本身可到 ~5MB,
     # 默认 1MB 上限会让 produce 同步抛 KafkaException 直接炸掉整个 replay 进程。
-    producer = Producer(
-        {"bootstrap.servers": cfg.kafka_bootstrap, "message.max.bytes": 5242880}
-    )
+    producer = Producer({"bootstrap.servers": cfg.kafka_bootstrap, "message.max.bytes": 5242880})
 
     # 固定本次运行的处理上界(乒乓循环防护)
     meta = consumer.list_topics(cfg.dlq_topic, timeout=10)
