@@ -259,7 +259,8 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 | 失败重试 | 瞬时故障无限退避;数据性错误有限重试 → DLQ(上限归档,带乒乓水位线防护) |
 | 崩溃恢复 | 向量 worker:offset 处理完才 commit(pgvector 账本同事务);湖腿:S3 checkpoint + restart |
 | Embedding 限流 | 批量切片(MAX_BATCH)+ 队列天然背压:429/5xx 时指数退避重试、阻塞本分区消费(无令牌桶);snapshot 全量阶段尤其注意 |
-| WAL 膨胀 | 监控 replication slot lag,Worker 长时间挂掉要告警(否则 PG 磁盘爆) |
+| WAL 膨胀 | 监控 replication slot lag,Worker 长时间挂掉要告警(否则 PG 磁盘爆);同库非监听表写入导致的 lag 由 connector heartbeat(10s)推进 LSN 自愈 |
+| 数值/时间列编码 | `decimal.handling.mode=string`(默认 precise 会把 NUMERIC 编成 base64 二进制垃圾)+ `time.precision.mode=connect`(统一毫秒,避免按列精度输出 µs/ns) |
 | 重建索引 | 换 embedding 模型 / 切分策略变更 → 触发全量重放(Debezium re-snapshot) |
 | 湖腿并发写 | Hudi 默认无锁,**流是唯一写者**(批量回填须流停时跑);真多 writer 才上 ZK 锁(S3 不支持零依赖文件锁) |
 | 可观测 | 同步延迟(CDC→向量)、embedding 调用量/命中跳过率、DLQ 积压、流速率/批延迟 |

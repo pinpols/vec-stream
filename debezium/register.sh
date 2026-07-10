@@ -4,6 +4,15 @@
 #
 # 用法:  ./debezium/register.sh           # 默认读项目根 .env
 #        CONNECT_URL=http://host:8083 ./debezium/register.sh
+#
+# register-postgres.json 两个非显然配置(JSON 无注释,说明放这里):
+# - heartbeat.interval.ms=10000:同库**未被监听的表**持续写入时,slot 的
+#   confirmed_flush_lsn 不会推进,WAL 只涨不消(slot_monitor 会报警但无法自愈)。
+#   心跳让 connector 周期性产生可确认事件,推进 LSN,WAL 随之释放——自愈机制。
+# - decimal.handling.mode=string:默认 precise 会把 NUMERIC/DECIMAL 编成
+#   base64 变长二进制,下游(worker/湖腿)拿到的是不可读垃圾;string 保真可读。
+#   time.precision.mode=connect 同理:统一用 Kafka Connect 时间语义(毫秒),
+#   避免默认 adaptive 按列精度输出不同单位(µs/ns)让下游解析踩坑。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

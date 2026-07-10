@@ -19,6 +19,11 @@
     "table.include.list": "public.article,public.product,public.comment",
     "snapshot.mode": "initial",
 
+    "heartbeat.interval.ms": "10000",
+
+    "decimal.handling.mode": "string",
+    "time.precision.mode": "connect",
+
     "tombstones.on.delete": "true",
 
     "key.converter": "org.apache.kafka.connect.json.JsonConverter",
