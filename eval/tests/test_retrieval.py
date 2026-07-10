@@ -115,3 +115,37 @@ def test_evaluate_retrieval_miss_lowers_mean():
     rep = evaluate_retrieval(queries, fake_search, k=5)
     assert rep.mean_recall_at_k == 0.5
     assert rep.mrr == 0.5
+
+
+# ── P2:golden 的 tenant_id 不参与请求(tenant 由 API key 决定),报告须标注;
+#        可选 per-tenant API key 映射(复用 rag 的 RAG_API_KEYS 形状:key→tenant)──
+
+
+def test_report_annotates_tenant_source():
+    rep = evaluate_retrieval([], lambda *a: [])
+    assert "API key" in rep.tenant_note
+    assert '"tenant_note"' in rep.to_json()
+
+
+def test_invert_api_keys():
+    from vec_stream_eval.retrieval import invert_api_keys
+
+    # rag 的 RAG_API_KEYS 是 key→tenant;倒排成 tenant→key,首个生效
+    assert invert_api_keys('{"k1": "t1", "k2": "t2", "k3": "t1"}') == {"t1": "k1", "t2": "k2"}
+    assert invert_api_keys("") == {}
+
+
+def test_key_for_tenant_prefers_mapping_then_default():
+    from vec_stream_eval.retrieval import key_for_tenant
+
+    assert key_for_tenant("t1", "default-key", {"t1": "k1"}) == "k1"
+    assert key_for_tenant("t2", "default-key", {"t1": "k1"}) == "default-key"
+
+
+def test_key_for_tenant_fails_loud_without_any_key():
+    import pytest
+
+    from vec_stream_eval.retrieval import key_for_tenant
+
+    with pytest.raises(SystemExit, match="t2"):
+        key_for_tenant("t2", None, {"t1": "k1"})
