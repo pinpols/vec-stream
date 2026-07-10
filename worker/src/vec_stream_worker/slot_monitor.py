@@ -1,5 +1,8 @@
 """健康监控线程(DESIGN.md §5):
 - replication slot lag:slot 不被消费时 PG 会无限堆 WAL 直到磁盘爆,超阈值告警;
+  注意「同库非监听表持续写入」造成的 lag 增长由 connector 的 heartbeat
+  (register-postgres.json:heartbeat.interval.ms)周期性推进 LSN 自愈,
+  本监控看到的持续增长应优先怀疑 connector 掉线/worker 停摆。
 - DLQ 积压:high watermark 与 replay group 已 commit 位点的差值。
 两者同时写日志与 Prometheus Gauge。"""
 

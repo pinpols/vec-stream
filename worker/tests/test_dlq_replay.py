@@ -66,14 +66,24 @@ class FakeConsumer:
 
 
 class FakeProducer:
-    def __init__(self, *a, **k):
-        self.produced = []
+    """支持 on_delivery 回调的 fake:fail_delivery 模拟 broker 拒收,unflushed 模拟超时残留。"""
 
-    def produce(self, topic, key, value, headers):
+    def __init__(self, fail_delivery=None, unflushed=0):
+        self.produced = []
+        self._fail = fail_delivery
+        self._unflushed = unflushed
+        self._pending_cbs = []
+
+    def produce(self, topic, key, value, headers, on_delivery=None):
         self.produced.append((topic, dict(headers)))
+        if on_delivery is not None:
+            self._pending_cbs.append(on_delivery)
 
     def flush(self, t):
-        pass
+        for cb in self._pending_cbs:
+            cb(self._fail, None)
+        self._pending_cbs = []
+        return self._unflushed
 
 
 @pytest.fixture
@@ -81,13 +91,19 @@ def wired(monkeypatch):
     """返回一个 (msgs, hi) → (consumer, producer) 的装配器,patch 掉 Consumer/Producer。"""
     holder = {}
 
-    def setup(msgs, hi):
-        fc, fp = FakeConsumer(msgs, hi), FakeProducer()
+    def setup(msgs, hi, producer=None):
+        fc, fp = FakeConsumer(msgs, hi), producer or FakeProducer()
         monkeypatch.setattr(dlq_replay, "Consumer", lambda conf: fc)
-        monkeypatch.setattr(dlq_replay, "Producer", lambda conf: fp)
+
+        def make_producer(conf):
+            holder["producer_conf"] = conf
+            return fp
+
+        monkeypatch.setattr(dlq_replay, "Producer", make_producer)
         holder["c"], holder["p"] = fc, fp
         return fc, fp
 
+    setup.holder = holder
     return setup
 
 
@@ -128,3 +144,36 @@ def test_archive_failure_does_not_commit(wired, monkeypatch):
     fc, fp = wired([FakeMsg(0, 0, [("source_topic", b"t"), ("replay_count", b"5")])], hi=1)
     dlq_replay.replay(Config(), limit=None, dry_run=False)
     assert fc.committed == []  # 归档失败不 commit,留待下次重试,不丢
+
+
+# ── P1:重投必须校验 delivery 结果,失败不 commit(否则死信静默永久丢失)──
+
+
+def test_delivery_failure_raises_and_does_not_commit(wired):
+    fc, fp = wired(
+        [FakeMsg(0, 0, [("source_topic", b"cdc.public.article"), ("replay_count", b"0")])],
+        hi=1,
+        producer=FakeProducer(fail_delivery=RuntimeError("broker rejected")),
+    )
+    with pytest.raises(RuntimeError, match="replay produce"):
+        dlq_replay.replay(Config(), limit=None, dry_run=False)
+    assert fc.committed == []  # 不 commit,DLQ offset 保留,下次重跑再投
+
+
+def test_unflushed_messages_raise_and_do_not_commit(wired):
+    fc, fp = wired(
+        [FakeMsg(0, 0, [("source_topic", b"cdc.public.article"), ("replay_count", b"0")])],
+        hi=1,
+        producer=FakeProducer(unflushed=1),
+    )
+    with pytest.raises(RuntimeError, match="replay produce"):
+        dlq_replay.replay(Config(), limit=None, dry_run=False)
+    assert fc.committed == []
+
+
+def test_replay_producer_allows_large_messages(wired):
+    # DLQ 里的死信可到 5MB(worker DLQ producer 同配置),replay producer 不对齐会
+    # 在 produce 时同步抛 KafkaException MSG_SIZE_TOO_LARGE 炸掉整个 replay。
+    wired([], hi=0)
+    dlq_replay.replay(Config(), limit=None, dry_run=False)
+    assert wired.holder["producer_conf"]["message.max.bytes"] == 5242880

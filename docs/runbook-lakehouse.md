@@ -63,6 +63,24 @@ $COMPOSE run --rm spark-lake query-iceberg article default 1  # RESULT=<status|A
 - 本地/可重放环境:停止 Hudi 流,删除 `s3a://warehouse/hudi/<table>` 和对应 `s3a://warehouse/_chk/hudi-*` checkpoint,从 Kafka earliest 重建。
 - 生产环境:写入新 base path / 新表名,全量重放校验后切换读侧,再下线旧表。
 
+### tenant_id 变更清理(已知边界)
+
+tenant_id 业务上视为不可变(DESIGN.md 边界段);若真发生 t1→t2,Hudi
+(recordkey 含 tenant)与 Iceberg(MERGE ON tenant,id)都会把新行当**新 key**
+写入,t1 旧行残留(Paimon 的 retraction 正确撤回,无此问题)。参考级不改写入
+逻辑,发现残留用 SQL 手工清理(以 id=42 从 t1 迁走为例):
+
+```sql
+-- Iceberg(spark-sql,catalog 名按环境)
+DELETE FROM lake.db.article_iceberg WHERE tenant_id = 't1' AND id = 42;
+
+-- Hudi(spark-sql;删除经 Hudi 写路径,产生 delete 记录)
+DELETE FROM article_hudi WHERE tenant_id = 't1' AND id = 42;
+```
+
+批量核对可与向量侧 `eval reconcile` 同思路:按 (tenant_id, id) 对比源表与湖表,
+湖表多出的 (旧租户, id) 即残留。
+
 ## 表维护(后台 table service · 生产必备)
 
 各引擎机制不同:

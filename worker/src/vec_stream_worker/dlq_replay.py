@@ -43,7 +43,9 @@ def replay(cfg: Config, limit: int | None, dry_run: bool) -> int:
             "enable.auto.commit": False,
         }
     )
-    producer = Producer({"bootstrap.servers": cfg.kafka_bootstrap})
+    # message.max.bytes 与 worker DLQ producer(main.py)对齐:死信本身可到 ~5MB,
+    # 默认 1MB 上限会让 produce 同步抛 KafkaException 直接炸掉整个 replay 进程。
+    producer = Producer({"bootstrap.servers": cfg.kafka_bootstrap, "message.max.bytes": 5242880})
 
     # 固定本次运行的处理上界(乒乓循环防护)
     meta = consumer.list_topics(cfg.dlq_topic, timeout=10)
@@ -123,10 +125,29 @@ def replay(cfg: Config, limit: int | None, dry_run: bool) -> int:
                 # 带递增的 replay_count:消息再次进 DLQ 时计数累加,最终触发归档
                 new_headers = [(k, v) for k, v in (msg.headers() or []) if k != "replay_count"]
                 new_headers.append(("replay_count", str(replay_count + 1).encode()))
+                # 重投必须校验 delivery 结果(与 worker DLQ 投递同款防护):broker 拒收/
+                # 超时若不校验,DLQ offset 照常 commit → 死信既不在源 topic 也不再被
+                # 消费,静默永久丢失。失败抛异常不 commit,下次运行重投。
+                delivery_failures: list = []
+
+                def _on_delivery(err, _m, _sink=delivery_failures):
+                    if err is not None:
+                        _sink.append(err)
+
                 producer.produce(
-                    source_topic, key=msg.key(), value=msg.value(), headers=new_headers
+                    source_topic,
+                    key=msg.key(),
+                    value=msg.value(),
+                    headers=new_headers,
+                    on_delivery=_on_delivery,
                 )
-                producer.flush(10)
+                remaining = producer.flush(10)
+                if delivery_failures or remaining:
+                    raise RuntimeError(
+                        f"replay produce to {source_topic} failed "
+                        f"(failures={[str(e) for e in delivery_failures]}, "
+                        f"un-flushed={remaining}); DLQ offset 不 commit,下次运行重投"
+                    )
                 consumer.commit(msg)
                 log.info(
                     "replayed(#%d) offset=%s → %s (error was: %s)",

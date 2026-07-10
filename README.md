@@ -51,6 +51,7 @@ curl http://localhost:8083/connectors/vec-stream-pg/status
 >   -e DEBEZIUM_PASSWORD="$DEBEZIUM_PASSWORD" \
 >   -e WORKER_PASSWORD="$WORKER_PASSWORD" \
 >   -e RAG_PASSWORD="$RAG_PASSWORD" \
+>   -e EVAL_PASSWORD="$EVAL_PASSWORD" \
 >   vec-stream-postgres bash /docker-entrypoint-initdb.d/02-security.sh
 > ```
 

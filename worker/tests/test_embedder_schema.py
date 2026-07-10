@@ -134,14 +134,22 @@ def test_http_embedder_empty():
 
 # ── schema_check ──
 class FakeCur:
-    def __init__(self, cols):
+    def __init__(self, cols, replident=None):
         self._cols = cols
+        self._replident = replident or {}
+        self._mode = "cols"
 
     def execute(self, sql, params):
         self._table = params[0]
+        self._mode = "replident" if "relreplident" in sql else "cols"
 
     def fetchall(self):
         return [(c,) for c in self._cols.get(self._table, [])]
+
+    def fetchone(self):
+        if self._table not in self._cols:
+            return None  # 表不存在 → to_regclass 为 NULL,查无行
+        return (self._replident.get(self._table, "f"),)
 
     def __enter__(self):
         return self
@@ -151,11 +159,12 @@ class FakeCur:
 
 
 class FakeConn:
-    def __init__(self, cols):
+    def __init__(self, cols, replident=None):
         self._cols = cols
+        self._replident = replident
 
     def cursor(self):
-        return FakeCur(self._cols)
+        return FakeCur(self._cols, self._replident)
 
     def __enter__(self):
         return self
@@ -164,10 +173,10 @@ class FakeConn:
         return False
 
 
-def _patch_connect(monkeypatch, cols):
+def _patch_connect(monkeypatch, cols, replident=None):
     import vec_stream_worker.schema_check as mod
 
-    monkeypatch.setattr(mod.psycopg, "connect", lambda dsn: FakeConn(cols))
+    monkeypatch.setattr(mod.psycopg, "connect", lambda dsn: FakeConn(cols, replident))
 
 
 def test_schema_check_passes(monkeypatch):
@@ -197,3 +206,48 @@ def test_schema_check_fails_missing_fk(monkeypatch):
     tables = {"comment": {"reembed_parent": {"table": "article", "fk": "article_id"}}}
     with pytest.raises(RuntimeError, match="reembed_parent"):
         check_schema("dsn", tables)
+
+
+# ── P2:CDC 表必须 REPLICA IDENTITY FULL(否则 before 镜像不完整,
+#        tenant 变更删旧向量 / DELETE 定位 / TOAST 回退全部失效)──
+
+
+def test_schema_check_fails_replica_identity_not_full(monkeypatch):
+    _patch_connect(
+        monkeypatch,
+        {"article": ["id", "tenant_id", "title", "body"]},
+        replident={"article": "d"},  # d = default(仅 PK)
+    )
+    tables = {"article": {"fields": ["title", "body"], "pk": "id"}}
+    with pytest.raises(RuntimeError, match="REPLICA IDENTITY FULL"):
+        check_schema("dsn", tables)
+
+
+def test_schema_check_checks_reembed_parent_table_identity(monkeypatch):
+    # 只配了子表 comment:父表 article 也是 CDC 依赖(重 embed 反查其行),RI 一样要查
+    _patch_connect(
+        monkeypatch,
+        {
+            "article": ["id", "tenant_id", "title", "body"],
+            "comment": ["id", "tenant_id", "article_id", "body"],
+        },
+        replident={"article": "n", "comment": "f"},
+    )
+    tables = {"comment": {"reembed_parent": {"table": "article", "fk": "article_id"}}}
+    with pytest.raises(RuntimeError, match="article.*REPLICA IDENTITY FULL"):
+        check_schema("dsn", tables)
+
+
+def test_schema_check_passes_with_full_identity(monkeypatch):
+    _patch_connect(
+        monkeypatch,
+        {
+            "article": ["id", "tenant_id", "title", "body"],
+            "comment": ["id", "tenant_id", "article_id", "body"],
+        },
+    )  # replident 默认全 'f'
+    tables = {
+        "article": {"fields": ["title", "body"], "pk": "id"},
+        "comment": {"reembed_parent": {"table": "article", "fk": "article_id"}},
+    }
+    check_schema("dsn", tables)  # 不抛即通过

@@ -85,9 +85,11 @@ services:
     env_file:
       - .env
     environment:
-      # 对账直连 PG;评估检索/生成时也可指向 rag 服务(容器网络 http://rag:8000)
-      RAG_PG_DSN: postgresql://vs_rag:${RAG_PASSWORD}@postgres:5432/${POSTGRES_DB:-vec_stream}
-      PG_DSN: postgresql://vs_rag:${RAG_PASSWORD}@postgres:5432/${POSTGRES_DB:-vec_stream}
+      # 对账直连 PG,用专职 vs_eval 角色:源表 + doc_vectors 都可 SELECT 且
+      # BYPASSRLS(vs_rag 读不了源表、读 doc_vectors 受 RLS 会静默 0 行)。
+      # ⚠️ vs_eval 由 db/init/02-security.sh 创建,已有旧卷需手动重放该脚本。
+      RAG_PG_DSN: postgresql://vs_eval:${EVAL_PASSWORD}@postgres:5432/${POSTGRES_DB:-vec_stream}
+      PG_DSN: postgresql://vs_eval:${EVAL_PASSWORD}@postgres:5432/${POSTGRES_DB:-vec_stream}
       # eval 通过 HTTP 打 rag 服务(retrieval/generation 子命令用,变量名 RAG_URL)
       RAG_URL: http://rag:8000
     depends_on:

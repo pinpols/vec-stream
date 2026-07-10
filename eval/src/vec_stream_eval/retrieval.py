@@ -56,6 +56,36 @@ class QueryResult:
     reciprocal_rank: float
 
 
+# 报告中 tenant_id 列的口径说明:请求实际命中的租户由所用 API key 决定
+# (服务端忽略请求体 tenant_id),golden 的 tenant_id 字段用于展示与选 key。
+TENANT_NOTE = (
+    "tenant 实际由请求所用 API key 决定(服务端忽略请求体 tenant_id);"
+    "per_query.tenant_id 来自 golden,仅作展示/选 key 依据"
+)
+
+
+def invert_api_keys(raw: str) -> dict[str, str]:
+    """把 rag 同款 RAG_API_KEYS(JSON,key→tenant)倒排成 tenant→key(首个生效)。"""
+    if not raw:
+        return {}
+    mapping = json.loads(raw)
+    by_tenant: dict[str, str] = {}
+    for key, tenant in mapping.items():
+        by_tenant.setdefault(str(tenant), str(key))
+    return by_tenant
+
+
+def key_for_tenant(tenant_id: str, default_key: str | None, by_tenant: dict[str, str]) -> str:
+    """选出打 /search 用的 API key:优先 per-tenant 映射,回退 RAG_API_KEY。"""
+    key = by_tenant.get(tenant_id) or default_key
+    if not key:
+        raise SystemExit(
+            f"golden 里的 tenant {tenant_id!r} 没有可用 API key:"
+            "设 RAG_API_KEY(单租户)或 RAG_API_KEYS(JSON key→tenant,多租户映射)"
+        )
+    return key
+
+
 @dataclass
 class RetrievalReport:
     k: int
@@ -64,6 +94,7 @@ class RetrievalReport:
     mean_recall_at_k: float
     mrr: float
     per_query: list[QueryResult]
+    tenant_note: str = TENANT_NOTE
 
     def to_json(self) -> str:
         d = asdict(self)
@@ -72,6 +103,7 @@ class RetrievalReport:
     def to_table(self) -> str:
         lines = [
             f"检索质量评估  k={self.k}  rerank={self.rerank}  queries={self.num_queries}",
+            f"  ({self.tenant_note})",
             f"  mean recall@{self.k} = {self.mean_recall_at_k:.4f}",
             f"  MRR              = {self.mrr:.4f}",
             "",
@@ -120,18 +152,26 @@ def evaluate_retrieval(
     )
 
 
-def make_http_search(rag_url: str, api_key: str, timeout: float = 30.0):
+def make_http_search(
+    rag_url: str,
+    api_key: str | None,
+    timeout: float = 30.0,
+    api_keys_by_tenant: dict[str, str] | None = None,
+):
     """构造打真 rag /search 的 search_fn(带 X-API-Key 鉴权)。
 
     top_k 直接用 k:取前 k 召回算 recall@k。rerank 透传给服务端。
+    ⚠️ tenant 由 API key 推导,请求体 tenant_id 被服务端忽略——golden 的
+    tenant_id 只用来从 api_keys_by_tenant 选 key(多租户 golden 时必须提供
+    映射,否则全部 query 实际打在 RAG_API_KEY 对应的那个租户上)。
     """
     client = httpx.Client(base_url=rag_url, timeout=timeout)
+    by_tenant = api_keys_by_tenant or {}
 
     def _search(query: str, tenant_id: str, k: int, rerank: bool) -> list[dict]:
-        # tenant 由 api_key 推导,请求体 tenant_id 被服务端忽略,这里不传。
         resp = client.post(
             "/search",
-            headers={"X-API-Key": api_key},
+            headers={"X-API-Key": key_for_tenant(tenant_id, api_key, by_tenant)},
             json={"query": query, "top_k": k, "rerank": rerank},
         )
         resp.raise_for_status()
@@ -149,10 +189,14 @@ def run(
 ) -> RetrievalReport:
     """CLI 入口:加载 golden、打真 rag、打印表格、可选写 JSON。"""
     api_key = os.getenv("RAG_API_KEY")
-    if not api_key:
-        raise SystemExit("缺少 RAG_API_KEY 环境变量(rag /search 需要 X-API-Key 鉴权)")
+    by_tenant = invert_api_keys(os.getenv("RAG_API_KEYS", ""))
+    if not api_key and not by_tenant:
+        raise SystemExit(
+            "缺少 RAG_API_KEY(或多租户映射 RAG_API_KEYS)环境变量"
+            "(rag /search 需要 X-API-Key 鉴权)"
+        )
     queries = load_golden(golden_path)
-    search_fn = make_http_search(rag_url or DEFAULT_RAG_URL, api_key)
+    search_fn = make_http_search(rag_url or DEFAULT_RAG_URL, api_key, api_keys_by_tenant=by_tenant)
     report = evaluate_retrieval(queries, search_fn, k=k, rerank=rerank)
     print(report.to_table())
     if json_out:

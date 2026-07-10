@@ -136,6 +136,12 @@
 - **失败分类决定重试策略**:基础设施瞬时故障(PG/向量库/embed-service 连接失败超时、HTTP 429/5xx)→ **无限退避重试不进 DLQ**(进了也修不好);数据性错误(解析失败/缺字段/NaN)→ 有限重试后进 DLQ。DLQ header 里的异常字符串经脱敏(抹掉 DSN 密码)。
 - **TOAST 大列占位符**:pgoutput 对 UPDATE 中**未变更的 TOAST 大列**在 after 镜像填占位符 `__debezium_unavailable_value`(REPLICA IDENTITY FULL 只保证 before 完整;bytea 列经 JSON base64 后是其 base64 形态)。worker 不受影响(upsert 一律反查源库当前态,不信 after);Hudi/Iceberg 湖腿已对字符串列做「占位符 → 回退 before」(`spark-lake/lakehouse_logic.py`);Flink→Paimon 参考腿 SQL 层做不了(debezium-json 拆 -U/+U,无状态拿不到 before),**记为该腿已知边界**,见 `flink-paimon/sql/cdc_to_paimon.sql` 头注。
 - **tenant_id 视为不可变(变更有在线兜底)**:业务上 tenant_id 不应变;若真发生 UPDATE 改 tenant_id,worker 会按事件 before 镜像的旧租户**顺带删一次旧向量**(防孤儿),新向量按反查后的新租户写入。该兜底只覆盖被正常消费的事件——事件丢失/DLQ 归档跳过时仍可能留孤儿,需离线 reconcile 对账清理。
+  **湖腿行为差异(参考级,不改写入逻辑)**:三条湖腿对 t1→t2 的处理不一致——
+  - Hudi:recordkey=`tenant_id,id`,t1→t2 后是**新 key**,upsert 只写新行,t1 旧行残留;
+  - Iceberg:`MERGE ON (tenant_id,id)` 同理,旧 (t1,id) 行不匹配、不被更新/删除,残留;
+  - Paimon(Flink 参考腿):debezium-json 的 -U/+U retraction 会撤回旧行,**行为正确**。
+  残留旧行意味着按 t1 过滤的分析查询仍能看到已迁走的数据(参考级可接受;清理 SQL 见
+  `docs/runbook-lakehouse.md` 的「tenant_id 变更清理」)。
 
 #### (b) 确定性向量 ID(幂等基石)
 
@@ -259,7 +265,8 @@ CREATE INDEX ON doc_vectors (tenant_id, source_table, source_pk);
 | 失败重试 | 瞬时故障无限退避;数据性错误有限重试 → DLQ(上限归档,带乒乓水位线防护) |
 | 崩溃恢复 | 向量 worker:offset 处理完才 commit(pgvector 账本同事务);湖腿:S3 checkpoint + restart |
 | Embedding 限流 | 批量切片(MAX_BATCH)+ 队列天然背压:429/5xx 时指数退避重试、阻塞本分区消费(无令牌桶);snapshot 全量阶段尤其注意 |
-| WAL 膨胀 | 监控 replication slot lag,Worker 长时间挂掉要告警(否则 PG 磁盘爆) |
+| WAL 膨胀 | 监控 replication slot lag,Worker 长时间挂掉要告警(否则 PG 磁盘爆);同库非监听表写入导致的 lag 由 connector heartbeat(10s)推进 LSN 自愈 |
+| 数值/时间列编码 | `decimal.handling.mode=string`(默认 precise 会把 NUMERIC 编成 base64 二进制垃圾)+ `time.precision.mode=connect`(统一毫秒,避免按列精度输出 µs/ns) |
 | 重建索引 | 换 embedding 模型 / 切分策略变更 → 触发全量重放(Debezium re-snapshot) |
 | 湖腿并发写 | Hudi 默认无锁,**流是唯一写者**(批量回填须流停时跑);真多 writer 才上 ZK 锁(S3 不支持零依赖文件锁) |
 | 可观测 | 同步延迟(CDC→向量)、embedding 调用量/命中跳过率、DLQ 积压、流速率/批延迟 |
