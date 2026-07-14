@@ -5,6 +5,20 @@
 # 容器内通过 host.docker.internal 抓宿主机,extra_hosts 把它映射到 host-gateway,
 # 因此在 Linux 上也能解析(macOS/Windows Docker Desktop 已内置该主机名)。
 services:
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: vec-stream-alertmanager
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: vec-stream-prometheus
@@ -19,6 +33,8 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --web.enable-lifecycle
+    depends_on:
+      - alertmanager
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

@@ -1,6 +1,6 @@
 # vec_stream 监控告警(ENTERPRISE.md M2 领域四 · item 7)
 
-Prometheus 告警规则 + SLO + 可选 Grafana 大盘。独立于主 `docker-compose.yml`,通过
+Prometheus 告警规则 + Alertmanager 路由 + SLO + 可选 Grafana 大盘。独立于主 `docker-compose.yml`,通过
 `docker-compose.monitoring.yml` 覆盖文件单独启停,不影响 db/kafka/connect/qdrant/worker。
 
 ## 文件
@@ -9,6 +9,7 @@ Prometheus 告警规则 + SLO + 可选 Grafana 大盘。独立于主 `docker-com
 | --- | --- |
 | `prometheus.yml` | 抓取配置:抓宿主机 worker `host.docker.internal:9100/metrics`,加载告警规则 |
 | `alerts.yml` | 4 类告警规则(同步延迟 / DLQ / slot / worker 掉线),每条含 SLO 注释 |
+| `alertmanager.yml` | 告警分组 / 重复通知 / resolved 通知样例;生产替换 receiver |
 | `grafana-dashboard.json` | 同步延迟、事件速率、DLQ、slot lag 大盘 |
 | `grafana/provisioning/` | Grafana 数据源 + dashboard 自动装载 |
 
@@ -19,6 +20,7 @@ docker compose -f docker-compose.monitoring.yml up -d
 ```
 
 - Prometheus:http://localhost:9090 （Alerts 页 `/alerts`,Targets 页 `/targets`）
+- Alertmanager:http://localhost:9093 （本地 receiver 是占位 webhook,生产需替换）
 - Grafana:http://localhost:3000 （admin / admin;Dashboards → "vec_stream — CDC 同步监控"）
 
 worker 需在**宿主机**上以 `METRICS_PORT`(默认 9100)运行并暴露 `/metrics`。容器通过
@@ -88,4 +90,5 @@ python3 -c "import yaml,sys; [yaml.safe_load(open(f)) for f in ('monitoring/aler
 ```bash
 promtool check config monitoring/prometheus.yml
 promtool check rules monitoring/alerts.yml
+amtool check-config monitoring/alertmanager.yml
 ```

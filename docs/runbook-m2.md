@@ -30,7 +30,7 @@ golden set 在 `eval/golden/queries.jsonl`,扩充标注即提高评估覆盖。
 ```bash
 docker compose -f docker-compose.monitoring.yml up -d   # Prometheus :9090 + Grafana :3000
 ```
-告警规则 `monitoring/alerts.yml`(用 worker 真实指标名):同步延迟 p99>60s、DLQ 增长、slot inactive/lag、worker 掉线。SLO 写在各规则注释。真正发通知需另接 Alertmanager。
+告警规则 `monitoring/alerts.yml`(用 worker 真实指标名):同步延迟 p99>60s、DLQ 增长、slot inactive/lag、worker 掉线。SLO 写在各规则注释。`monitoring/alertmanager.yml` 已接本地占位 receiver,生产替换为企业 IM / PagerDuty / 自建告警网关。
 
 ## 4. DLQ 工具链增强(item 8)
 

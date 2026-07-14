@@ -15,6 +15,7 @@ MySQL / PostgreSQL → Debezium → Kafka ─┼→ spark-lake hudi    → Hudi 
 - 设计文档:[`docs/DESIGN.md`](docs/DESIGN.md) — 架构、核心难点、当前选型、已落地里程碑
 - 企业级演进规划:[`docs/ENTERPRISE.md`](docs/ENTERPRISE.md) — 7 大领域差距、该做/按需/越界判定、M1–M3 路线
 - 生产准入与成熟度:[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) — 当前成熟度、发布门禁、生产部署边界
+- 生产部署契约:[`docs/PRODUCTION_DEPLOYMENT_CONTRACT.md`](docs/PRODUCTION_DEPLOYMENT_CONTRACT.md) — 生产平台能力、环境变量、上线准入
 - 安全边界:[`docs/SECURITY_BOUNDARY.md`](docs/SECURITY_BOUNDARY.md) — RLS/API key、端口暴露、生产防呆、管理面边界
 - Topic 规划:[`docs/TOPICS.md`](docs/TOPICS.md) — 统一 CDC 多 sink(单连接器/单复制槽,三 sink 共用 cdc.public.* JSON)
 - Lakehouse 腿:[`spark-lake/`](spark-lake/) + [`docs/runbook-lakehouse.md`](docs/runbook-lakehouse.md) — 统一 Spark 引擎写 **Hudi 和 Iceberg**(各自主流引擎,连续流 Structured Streaming + 批量回填),已验证

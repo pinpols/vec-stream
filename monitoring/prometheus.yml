@@ -12,6 +12,12 @@ global:
 rule_files:
   - /etc/prometheus/alerts.yml
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
 scrape_configs:
   # vec_stream worker(宿主机进程):CDC 同步延迟 / DLQ / chunks / slot lag 指标
   - job_name: vec-stream-worker

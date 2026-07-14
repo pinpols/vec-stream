@@ -43,9 +43,7 @@ class LakehouseLogicTest(unittest.TestCase):
 
     def test_resolve_toasted_base64_placeholder_falls_back_to_before(self):
         # bytea 列经 JSON converter base64 后,占位符是其 base64 形态
-        self.assertEqual(
-            DEBEZIUM_UNAVAILABLE_VALUE_B64, "X19kZWJleml1bV91bmF2YWlsYWJsZV92YWx1ZQ=="
-        )
+        self.assertEqual(DEBEZIUM_UNAVAILABLE_VALUE_B64, "X19kZWJleml1bV91bmF2YWlsYWJsZV92YWx1ZQ==")
         self.assertEqual(resolve_toasted(DEBEZIUM_UNAVAILABLE_VALUE_B64, "raw"), "raw")
 
     def test_resolve_toasted_normal_value_passes_through(self):
