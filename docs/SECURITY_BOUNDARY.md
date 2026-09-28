@@ -16,7 +16,7 @@
   - `EMBED_PROVIDER=openai` 但未设置 `OPENAI_API_KEY`
 - **enrich_sql 注入面收敛**:跨表反查 SQL 来自 `TABLES_JSON`(运维侧配置),启动期校验**必须是单条 SELECT**(禁分号/DDL/DML)且**必带 `%(tenant)s` 条件**,防止误配/被篡改的配置在 `vs_worker` 权限下注入任意 SQL 或泄漏跨租户数据;`fields` 非空校验避免运行时崩。
 - **凭据脱敏**:DLQ header / 归档 / 日志里的异常字符串经 `_redact` 抹掉 DSN 密码(psycopg 报错常带完整连接串),避免密码扩散到 Kafka DLQ + PG archive + stdout 三处。
-- **/healthz 不泄漏拓扑**:健康检查只回状态 + 后端类型,不再回 LLM 网关 URL;且真探测向量后端,依赖宕机回 503(K8s 探针可感知)。
+- **/healthz 不泄漏拓扑**:健康检查只回 `status`,不回后端类型/模型/LLM 网关 URL;且真探测向量后端,依赖宕机回 503(K8s 探针可感知)。
 - **跨租户源库约束**:`comment(tenant_id, article_id)` 外键指向 `article(tenant_id, id)`,防止跨租户脏引用进入跨表文档。
 - **Qdrant API key 透传**:worker/rag 都支持 `QDRANT_API_KEY`;本地可不设,生产必须设。
 - **Embedding 出境门闸**:`EMBED_PROVIDER=openai` 会把源文档发给 OpenAI-compatible embeddings 端点,默认不可用;必须显式设置 `EMBED_EGRESS_ALLOWED=true`。

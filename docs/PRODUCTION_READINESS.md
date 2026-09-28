@@ -1,6 +1,6 @@
 # 生产准入与成熟度评审
 
-> 日期:2026-06-25  
+> 日期:2026-07-14  
 > 结论:当前是 **M2+ / pre-production reference**。功能链路、隔离、安全、观测、评估、lakehouse 旁路已经成体系;但本仓库仍定位为本地可复现的生产级样板,不是直接承诺 HA / 合规 / 托管运维的平台。
 
 ## 1. 当前成熟度
@@ -12,10 +12,10 @@
 | 向量/RAG | A | 确定性 ID、hash 去重、metadata 刷新、RLS、API key 租户绑定、rerank、/ask 出境门闸、评估模块已形成闭环 |
 | Lakehouse | B+ | Spark 统一写 Hudi/Iceberg,批量+连续流+checkpoint+维护脚本具备;仍是 local Spark runner,不是托管计算集群 |
 | 可靠性 | B+ | at-least-once + 幂等写、processed_offsets、DLQ 上限归档、slot lag 告警;瞬时/数据性故障分类、崩溃恢复已**故障注入实测**;生产 HA 仍依赖外部托管或独立部署 |
-| 可观测 | B+ | Prometheus/Grafana/alerts/OTel 可选链路已具备;生产还需 Alertmanager、日志采集和告警值校准 |
+| 可观测 | A- | Prometheus/Grafana/alerts/Alertmanager/OTel 可选链路已具备;生产还需日志采集和告警值校准 |
 | 安全 | A- | 最小权限账号、RLS、API key->tenant、loopback 端口、生产防呆、Qdrant API key 透传具备;生产还需 TLS/SASL、secret manager、密钥轮换 |
-| 工程化 | B+ | Python lint/test CI 已有;新增结构校验后 compose/shell/lake 脚本纳入门禁 |
-| 运维手册 | A- | M2、lakehouse、Flink/Paimon、topic 边界均有文档;生产部署手册仍需按目标环境落地 |
+| 工程化 | A- | Python lint/test CI、结构校验、schema contract、SCA 硬门禁已纳入门禁 |
+| 运维手册 | A- | M2、lakehouse、Flink/Paimon、topic 边界、生产部署契约均有文档;真实生产参数仍需按目标环境落地 |
 
 ## 2. 准入门槛
 
@@ -44,6 +44,7 @@ CI 门禁:
 
 - `.github/workflows/ci.yml` 的 `structure` job:compose 合并、bash 语法、Spark lake Python 语法、shellcheck。
 - `lint-and-test` matrix:worker / rag / eval / embed-service 的 ruff + pytest。
+- `.github/workflows/security-scan.yml`:Bandit 高危阻断、pip-audit 除显式接受 CVE 外阻断、Semgrep 报告留 artifact。
 - `.pre-commit-config.yaml`:提交前跑 ruff、基础文件检查、`scripts/validate.sh`。
 
 ## 3. 已闭环的生产能力
@@ -52,14 +53,16 @@ CI 门禁:
 - 幂等与一致性:向量侧确定性 `vector_id`;**pgvector 后端**处理账本与向量写入同 PG 事务(原子),**Qdrant 后端**账本是写完后 best-effort 写 PG(无原子性,仅审计参考);lakehouse 按 PK upsert/delete。
 - 数据完整性硬化(均带回归测试):CDC 事件即触发器收敛源库当前态、空内容删幽灵向量、falsy 字段不丢、NaN/Inf 向量拒绝、瞬时 vs 数据性故障分类(embed-service 宕机无限退避非进 DLQ)、hash 命中但向量缺失回退全量 upsert。
 - 故障恢复实测:`docs/test-plan-fault-injection.md` 真 kill 流容器 / 重启 connector,崩溃恢复不丢、update 传播、幂等不重不漏(Hudi==源库)、slot 续传全过。
-- 安全隔离:源库最小权限账号,RAG key 推导 tenant,PG RLS 做强制隔离;`/ask` 需显式允许 LLM 数据出境。
+- 安全隔离:源库最小权限账号,RAG key 推导 tenant,PG RLS 做强制隔离;embedding / `/ask` 数据出境均需显式允许。
 - 暴露面收敛:本地 compose 端口默认只绑定 `127.0.0.1`;CI 会拒绝新增未绑定 loopback 的端口映射。
 - 生产防呆:`APP_ENV=production` 会拒绝 dev key、弱 DSN、Qdrant 无 API key。
 - 成本控制:文本 hash 去重,metadata-only 更新不重新 embedding,embedding service 可独立扩展。
 - 质量度量:retrieval / generation / reconcile 三类评估,蓝绿索引切换有客观验收。
-- 可观测:worker 指标、slot lag、DLQ backlog、Grafana dashboard、Spark stream Prometheus、OTel tracing。
+- 可观测:worker 指标、slot lag、DLQ backlog、Prometheus alerts、Alertmanager 路由、Grafana dashboard、Spark stream Prometheus、OTel tracing。
+- Schema contract:单测校验 `db/init/01-init.sql`、worker `DEFAULT_TABLES`、Hudi/Iceberg `TABLES` 不漂移。
 - Lakehouse:Spark Hudi + Spark Iceberg 双腿,批量回填、连续流、Iceberg table service、Hudi cleaner/compaction 配置。
 - 环境复用:可自包含运行,也可通过 `docker-compose.reuse-batch.yml` 复用 file-batch-system 的 Kafka/MinIO。
+- 生产部署契约:`docs/PRODUCTION_DEPLOYMENT_CONTRACT.md` 明确平台能力、变量、准入命令和上线后观测项。
 
 ## 4. 生产部署边界
 
@@ -71,7 +74,7 @@ CI 门禁:
 - Secret manager:Vault/KMS/云 Secret Manager,替换 `.env` 明文文件。
 - 网络安全:Kafka SASL/TLS、PG TLS、服务间 mTLS 或内网访问控制。
 - 管理面:Connect/Qdrant/MinIO/Iceberg REST/Prometheus/Grafana/Jaeger/Spark UI 不允许直接暴露公网。
-- 日志与告警:集中日志、Alertmanager/通知路由、按真实负载校准 SLO 阈值。
+- 日志与告警:集中日志、生产通知 receiver、按真实负载校准 SLO 阈值。
 - Spark 运行环境:生产不要依赖单容器 local mode;迁移到 Spark on Kubernetes/YARN/托管 Spark 后复用 `spark-lake` 作业逻辑。
 - 数据治理:Schema Registry 或 DDL 兼容流程、数据血缘、权限审计、合规删除。
 
@@ -79,11 +82,10 @@ CI 门禁:
 
 这些不是“功能没做”,而是让项目更像可交付平台:
 
-1. **Schema contract test**:从 `db/init/01-init.sql` 或 live `information_schema` 生成表字段契约,校验 worker `TABLES_JSON` 和 `spark-lake` schema 不漂移。
-2. **Runbook drill**:增加 WAL lag、DLQ 归档、Kafka retention 丢 offset、Iceberg 维护失败的演练脚本或检查清单。
-3. **Release checklist**:把本文件 §2 的准入命令固化成版本发布清单,记录 smoke 输出和镜像 tag。
-4. **Dependency audit**:给 Python、Docker base image、Spark jar 依赖加定期安全扫描。
-5. **Production overlays**:为真实部署新增单独 overlay,明确 TLS/SASL/secret manager/外部 Kafka/外部 MinIO/S3 的变量契约。
+1. **Runbook drill**:增加 WAL lag、DLQ 归档、Kafka retention 丢 offset、Iceberg 维护失败的演练脚本或检查清单。
+2. **Release checklist**:把本文件 §2 的准入命令固化成版本发布清单,记录 smoke 输出和镜像 tag。
+3. **Image / jar audit**:Python 依赖已有 SCA 门禁;Docker base image、Spark/Hudi/Iceberg jar 仍需定期扫描。
+4. **Production overlays**:按目标平台新增独立 overlay/Helm/Kustomize,把 TLS/SASL/secret manager/外部 Kafka/S3 变量契约固化为部署模板。
 
 ## 6. 最终判断
 
@@ -91,4 +93,4 @@ CI 门禁:
 
 > CDC-driven multi-sink streaming platform for vector search/RAG and lakehouse materialization.
 
-生产级完善的下一步不是继续堆 sink,而是把 schema 契约、故障演练、发布准入和生产 overlay 做硬。否则功能越多,回归面越大。
+生产级完善的下一步不是继续堆 sink,而是把故障演练、发布准入记录和目标平台部署模板做硬。否则功能越多,回归面越大。

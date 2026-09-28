@@ -53,13 +53,13 @@ jobs:
           path: semgrep-report.json
 
   pip-audit:
-    # SCA(依赖 CVE 扫描):对 4 个模块的 uv.lock 逐一审计。报告制起步
-    # (continue-on-error)——torch 2.2.2 因 Intel macOS 兼容锁定,存在已接受的
-    # CVE-2025-32434(见 docs/SECURITY_BOUNDARY.md「已接受的依赖风险」),硬门禁
-    # 会常红;等风险清零或接入 ignore 清单后再转硬。
+    # SCA(依赖 CVE 扫描):对 4 个模块的 uv.lock 逐一审计。除显式接受并记录的
+    # CVE-2025-32434(torch 2.2.2 / Intel macOS,见 docs/SECURITY_BOUNDARY.md)
+    # 外,新增依赖漏洞直接阻断。
     name: pip-audit (SCA)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    env:
+      PIP_AUDIT_IGNORES: "--ignore-vuln CVE-2025-32434"
     strategy:
       fail-fast: false
       matrix:
@@ -77,10 +77,13 @@ jobs:
       - name: pip-audit
         run: |
           pip install pip-audit
-          pip-audit -r ${{ matrix.module }}/requirements-audit.txt --disable-pip || true
-          # 同时产出 JSON 报告(失败不阻塞,报告进 artifact)
+          pip-audit -r ${{ matrix.module }}/requirements-audit.txt --disable-pip $PIP_AUDIT_IGNORES
+      - name: pip-audit JSON report
+        if: always()
+        run: |
+          pip install pip-audit
           pip-audit -r ${{ matrix.module }}/requirements-audit.txt --disable-pip \
-            -f json -o pip-audit-${{ matrix.module }}.json || true
+            $PIP_AUDIT_IGNORES -f json -o pip-audit-${{ matrix.module }}.json || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

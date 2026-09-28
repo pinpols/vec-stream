@@ -1,0 +1,16 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: local-webhook-placeholder
+  group_by: ["alertname", "service", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  # 本地样例 receiver。生产替换成企业 IM / PagerDuty / Opsgenie / 自建告警网关。
+  - name: local-webhook-placeholder
+    webhook_configs:
+      - url: http://host.docker.internal:9999/alertmanager-webhook-placeholder
+        send_resolved: true
