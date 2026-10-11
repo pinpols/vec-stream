@@ -33,12 +33,17 @@
 
 ## 已接受的依赖风险
 
-- **torch 2.2.2 < 2.6,CVE-2025-32434**(`torch.load(weights_only=True)` 仍可
-  RCE):worker / embed-service 在 Intel macOS 上锁定 torch==2.2.2(2.2.x 是该
-  平台最后有 wheel 的版本,升级即失去本机可跑性)。**接受理由**:模型加载来源
-  固定为 sentence-transformers 拉取的 `BAAI/bge-*` 官方权重,不加载用户提供/
-  不可信的 checkpoint,攻击前提(恶意权重文件)在本项目使用方式下不成立。
-  生产若换 Linux/GPU 环境,应直接升级 torch≥2.6 消除该项。
+- **torch 2.2.2 系列漏洞公告**(`CVE-2025-32434` 以及
+  `PYSEC-2024-259`、`PYSEC-2025-189`–`PYSEC-2025-195`、
+  `PYSEC-2025-198`、`PYSEC-2025-203`–`PYSEC-2025-209`、
+  `PYSEC-2025-41`、`PYSEC-2026-139`、`PYSEC-2026-1970`、
+  `PYSEC-2026-2286`):
+  worker / rag / embed-service 在 Intel macOS 上锁定 `torch==2.2.2`
+  (2.2.x 是该平台最后有 wheel 的版本,升级即失去本机可跑性)。**接受理由**:
+  模型加载来源固定为 sentence-transformers 拉取的 `BAAI/bge-*` 官方权重,
+  不加载用户提供/不可信的 checkpoint,攻击前提(恶意权重文件或不可信模型文件)
+  在本项目使用方式下不成立。生产若换 Linux/GPU 环境,应直接升级 torch 到
+  当前安全版本并移除 `.github/workflows/security-scan.yml` 中的 torch ignore 清单。
 
 ## 生产准入
 

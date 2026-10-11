@@ -32,6 +32,7 @@ jobs:
           DEBEZIUM_PASSWORD=change-me-debezium
           WORKER_PASSWORD=change-me-worker
           RAG_PASSWORD=change-me-rag
+          EVAL_PASSWORD=change-me-eval
           MINIO_ROOT_USER=minioadmin
           MINIO_ROOT_PASSWORD=minioadmin123
           ENV
