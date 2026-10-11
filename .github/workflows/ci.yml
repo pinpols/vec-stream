@@ -25,8 +25,8 @@ jobs:
         run: bash scripts/validate.sh
 
   # 每个模块独立一个 job(矩阵展开),互不阻塞、可并行。
-  # worker/rag/embed-service 依赖 sentence-transformers/torch 较重,
-  # 但"加载真模型"的测试本身是 mock 的,不会真下载权重,正常 uv sync 即可。
+  # worker/rag/embed-service 的真模型依赖较重;CI 单测 mock/延迟导入模型路径,
+  # 依赖同步跳过本地模型栈,避免 PR 检查卡在重依赖下载。
   lint-and-test:
     name: ${{ matrix.module }}
     runs-on: ubuntu-latest
@@ -47,16 +47,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
           # 缓存 uv 下载/构建的依赖(torch 等重依赖),按各模块 lock 文件失效。
           enable-cache: true
           cache-dependency-glob: "${{ matrix.module }}/uv.lock"
 
-      - name: Sync dependencies
-        run: uv sync --group dev
+      - name: Install test dependencies
+        run: |
+          uv venv --python 3.12
+          uv export --frozen --no-hashes --no-emit-project --format requirements-txt \
+            --group dev \
+            --no-emit-package torch \
+            --no-emit-package sentence-transformers \
+            --no-emit-package transformers \
+            --no-emit-package scikit-learn \
+            --no-emit-package scipy \
+            --no-emit-package sympy \
+            --no-emit-package tokenizers \
+            --no-emit-package safetensors \
+            --no-emit-package huggingface-hub \
+            --no-emit-package hf-xet \
+            --no-emit-package networkx \
+            > requirements-ci.txt
+          uv pip install --python .venv/bin/python -r requirements-ci.txt "pytest-cov>=6.0"
+          uv pip install --python .venv/bin/python -e . --no-deps
 
       # ruff 不是任何模块的依赖,用 uvx 跑固定版本的独立工具
       # (与 .pre-commit-config.yaml 保持同一 pin)。--config 指向仓库根统一规则。
@@ -68,4 +88,4 @@ jobs:
 
       # 覆盖率棘轮:per-module --cov-fail-under(实测 worker58/rag66/embed81),只防回退。
       - name: Pytest (coverage)
-        run: uv run --group dev --with pytest-cov python -m pytest -q --cov=${{ matrix.cov }} --cov-report=term-missing --cov-fail-under=${{ matrix.floor }}
+        run: .venv/bin/python -m pytest -q --cov=${{ matrix.cov }} --cov-report=term-missing --cov-fail-under=${{ matrix.floor }}
